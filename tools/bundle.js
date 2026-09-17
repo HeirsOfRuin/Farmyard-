@@ -123,12 +123,19 @@ for (const p of order()) {
   );
 }
 
+// Replacement FUNCTIONS, not strings.
+//
+// String.prototype.replace treats `$&`, `$'`, '$`' and `$1` as special patterns
+// in a string replacement. The game's own source contains `${'$' + ...}` — a
+// dollar sign in a template literal, which is unremarkable code — and the
+// sequence `$'` in it was silently expanded into "everything after the match",
+// producing a bundle that would not parse. A function replacement passes the
+// text through untouched.
+const script = `<script type="module">\n${parts.join('\n\n')}\n</script>`;
+const styleTag = `<style>\n${css}\n</style>`;
 const bundled = html
-  .replace(/<link rel="stylesheet"[^>]*>/, `<style>\n${css}\n</style>`)
-  .replace(
-    /<script type="module"[^>]*><\/script>/,
-    `<script type="module">\n${parts.join('\n\n')}\n</script>`
-  );
+  .replace(/<link rel="stylesheet"[^>]*>/, () => styleTag)
+  .replace(/<script type="module"[^>]*><\/script>/, () => script);
 
 await mkdir(join(ROOT, 'dist'), { recursive: true });
 await writeFile(join(ROOT, OUT), bundled, 'utf8');

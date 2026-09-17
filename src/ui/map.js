@@ -8,7 +8,12 @@
 // This module renders. It does not compute anything about the farm — every
 // number it shows comes from the engine.
 
-import { MAP_SECTIONS, QUARTER_CODES, legalDescription, TENURE_LABEL } from '../engine/land.js';
+import {
+  MAP_SECTIONS, QUARTER_CODES, legalDescription, TENURE_LABEL,
+  distanceFromYard, roadFor, roadLevelFor,
+} from '../engine/land.js';
+import { timelinessFactor } from '../engine/derive.js';
+import { ROAD_CLASSES } from '../data/roads.data.js';
 import { CROPS } from '../data/crops.data.js';
 import { SOILS } from '../data/regions.data.js';
 
@@ -54,6 +59,43 @@ export function useColour(q) {
  * Render the township.
  * `mode` picks what the colours mean: 'use' (what is growing) or 'soil'.
  */
+// Roads have to read AGAINST the field colours, not blend into them. The first
+// version used browns a shade apart from the fills and the whole road network
+// disappeared into the map — present, and completely illegible.
+const ROAD_STROKE = {
+  0: { colour: '#b8452e', width: 1.5, dash: '4 5', opacity: 0.75 }, // trail: broken line
+  1: { colour: '#b8452e', width: 2.8, dash: '10 3', opacity: 0.9 }, // graded
+  2: { colour: '#7d2f1f', width: 4.2, dash: null, opacity: 1 },     // gravel: solid
+  3: { colour: '#241d16', width: 5.0, dash: null, opacity: 1 },     // paved
+};
+
+/**
+ * The road allowances, drawn on the grid the survey put them on.
+ *
+ * Each quarter's access is shown as the road along its southern edge, weighted
+ * by what the surface actually is — a dashed hairline for a trail, a solid band
+ * for gravel. It is the quickest way to see why the far corner of the farm
+ * costs what it costs.
+ */
+function renderRoads(state) {
+  const parts = [];
+  for (const q of state.quarters) {
+    const lvl = Math.round(roadLevelFor(state, q));
+    const st = ROAD_STROKE[Math.max(0, Math.min(3, lvl))];
+    const x = PAD + q.col * CELL;
+    const y = PAD + (q.row + 1) * CELL;
+    // A pale casing under the road so it reads over any field colour.
+    parts.push(
+      `<line x1="${x}" y1="${y}" x2="${x + CELL}" y2="${y}" ` +
+        `stroke="#f2ece0" stroke-width="${st.width + 2.4}" opacity="0.55" stroke-linecap="round" />` +
+      `<line x1="${x}" y1="${y}" x2="${x + CELL}" y2="${y}" ` +
+        `stroke="${st.colour}" stroke-width="${st.width}" opacity="${st.opacity}" ` +
+        `${st.dash ? `stroke-dasharray="${st.dash}"` : ''} stroke-linecap="round" />`
+    );
+  }
+  return parts.join('');
+}
+
 export function renderMap(state, { selectedId = null, mode = 'use' } = {}) {
   const w = COLS * CELL + PAD * 2;
   const h = ROWS * CELL + PAD * 2;
@@ -73,7 +115,9 @@ export function renderMap(state, { selectedId = null, mode = 'use' } = {}) {
     const x = PAD + q.col * CELL;
     const y = PAD + q.row * CELL;
     const mine = q.owner === 'player';
-    const fill = mode === 'soil' ? soilColour(q) : useColour(q);
+    const fill = mode === 'soil' ? soilColour(q)
+      : mode === 'roads' ? distanceColour(state, q)
+      : useColour(q);
     const cls = ['qtr', mine ? 'mine' : '', q.id === selectedId ? 'sel' : ''].filter(Boolean).join(' ');
 
     parts.push(`<g class="${cls}" data-quarter="${q.id}" tabindex="0" role="button" aria-label="${esc(quarterAria(state, q))}">`);
@@ -92,13 +136,28 @@ export function renderMap(state, { selectedId = null, mode = 'use' } = {}) {
     }
 
     parts.push(`<text class="qlabel" x="${x + 5}" y="${y + 13}">${q.quarter} ${q.section}</text>`);
-    parts.push(`<text class="qsub" x="${x + 5}" y="${y + 24}">${esc(subLabel(q, mode))}</text>`);
+    parts.push(`<text class="qsub" x="${x + 5}" y="${y + 24}">${esc(subLabel(q, mode, state))}</text>`);
     if (mine) {
       parts.push(`<text class="qsub" x="${x + 5}" y="${y + CELL - 6}">${Math.round(q.brokenAcres)} ac broken</text>`);
     } else if (q.forSale) {
       parts.push(`<text class="qsub" x="${x + 5}" y="${y + CELL - 6}" style="font-weight:700">FOR SALE</text>`);
     }
     parts.push('</g>');
+  }
+
+  parts.push(renderRoads(state));
+
+  // The yard. Everything on the farm is measured from here.
+  const home = state.quarters.find((q) => q.id === state.homeQuarterId);
+  if (home) {
+    const hx = PAD + home.col * CELL + CELL / 2;
+    const hy = PAD + home.row * CELL + CELL / 2;
+    parts.push(
+      `<g pointer-events="none">` +
+        `<circle cx="${hx}" cy="${hy}" r="9" fill="#2b2119" opacity="0.85"/>` +
+        `<circle cx="${hx}" cy="${hy}" r="4" fill="#d9a441"/>` +
+        `<title>The yard</title></g>`
+    );
   }
 
   // Section boundaries, drawn over the quarters.
@@ -122,6 +181,16 @@ export function renderMap(state, { selectedId = null, mode = 'use' } = {}) {
   return parts.join('');
 }
 
+/** Shaded by how much distance costs this quarter — pale near, dark far. */
+function distanceColour(state, q) {
+  const loss = 1 - timelinessFactor(state, q);
+  const t = Math.min(1, loss / 0.3);
+  // A wider spread than the first attempt, which put five near-identical browns
+  // next to each other and conveyed nothing.
+  const shades = ['#eae2cc', '#cfbb93', '#ad8f5f', '#856434', '#5a3f1c'];
+  return shades[Math.min(shades.length - 1, Math.round(t * (shades.length - 1)))];
+}
+
 function soilColour(q) {
   return {
     clay:   '#5d4a3a',
@@ -132,8 +201,12 @@ function soilColour(q) {
   }[q.soil] || '#8d8375';
 }
 
-function subLabel(q, mode) {
+function subLabel(q, mode, state) {
   if (mode === 'soil') return SOILS[q.soil].short;
+  if (mode === 'roads' && state) {
+    const miles = distanceFromYard(state, q);
+    return miles === 0 ? 'the yard' : `${miles} mi · ${roadFor(state, q).short}`;
+  }
   if (q.owner === 'player') return CROPS[q.use]?.name || q.use;
   if (!q.owner) return 'open';
   if (q.owner === 'neighbour') return q.ownerName || 'neighbour';
@@ -142,7 +215,20 @@ function subLabel(q, mode) {
 
 function quarterTitle(state, q) {
   const soil = SOILS[q.soil];
+  const miles = distanceFromYard(state, q);
+  const road = roadFor(state, q);
   const lines = [`${legalDescription(q, state.townshipLabel)} — ${soil.name}`];
+  lines.push(
+    miles === 0
+      ? 'The yard'
+      : `${miles} miles from the yard, on ${road.short === 'trail' ? 'a trail' : `a ${road.short} road`}`
+  );
+  if (q.owner === 'player' && miles > 0) {
+    const loss = 1 - timelinessFactor(state, q);
+    if (loss > 0.02) {
+      lines.push(`Distance costs this field about ${Math.round(loss * 100)}% of its crop`);
+    }
+  }
   if (q.owner === 'player') {
     lines.push(`${CROPS[q.use]?.name || q.use}, ${Math.round(q.brokenAcres)} of 160 acres broken`);
     lines.push(`Fertility ${(q.fertility * 100).toFixed(0)}%`);
@@ -160,12 +246,24 @@ function quarterTitle(state, q) {
 }
 
 function quarterAria(state, q) {
-  return `${legalDescription(q, state.townshipLabel)}, ${subLabel(q, 'use')}` +
+  return `${legalDescription(q, state.townshipLabel)}, ${subLabel(q, 'use', state)}` +
     (q.owner === 'player' ? `, ${Math.round(q.brokenAcres)} acres broken` : '');
 }
 
 /** The legend under the map, matching whichever mode is showing. */
 export function renderLegend(state, mode = 'use') {
+  if (mode === 'roads') {
+    const items = ROAD_CLASSES.map((c) => {
+      const st = ROAD_STROKE[c.level];
+      const style = st.dash
+        ? `background:repeating-linear-gradient(90deg,${st.colour} 0 4px,transparent 4px 8px);height:${Math.max(2, st.width)}px`
+        : `background:${st.colour};height:${Math.max(2, st.width)}px`;
+      return `<span><i style="${style};border:none;border-radius:1px"></i>${esc(c.name)}</span>`;
+    });
+    items.push('<span><i style="background:#eae2cc"></i>at the yard</span>');
+    items.push('<span><i style="background:#5a3f1c"></i>far out, and it costs</span>');
+    return items.join('');
+  }
   if (mode === 'soil') {
     return Object.values(SOILS)
       .map((s) => `<span><i style="background:${soilColour({ soil: s.id })}"></i>${esc(s.name)}</span>`)

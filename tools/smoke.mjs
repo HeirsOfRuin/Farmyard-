@@ -148,6 +148,16 @@ for (const t of ['market', 'books', 'family', 'plan']) {
 }
 report('tabs');
 
+// Roads and distance view — the geography layer has to be legible, not just
+// present, and the only way to know is to render it and look.
+if (await page.locator('[data-map="roads"]').count()) {
+  await page.click('[data-map="roads"]');
+  await page.waitForTimeout(100);
+  await page.screenshot({ path: `${SHOTS}/8-roads.png` });
+  const roadLines = await page.locator('svg.township line').count();
+  console.log(`roads view drew                    ${roadLines} road segments`);
+}
+
 // Soil view, and a quarter click.
 await page.click('[data-map="soil"]');
 await page.waitForTimeout(80);

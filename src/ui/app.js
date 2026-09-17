@@ -35,6 +35,7 @@ function emptyDraft() {
     fieldUse: {}, breakAcres: {}, buyEquipment: [], sellEquipment: [],
     buyLivestock: {}, sellLivestock: {}, buyLand: [], adoptTech: [],
     loans: [], improvements: [], fileHomestead: null, writeWill: null,
+    roadWorks: [], takeUpPrograms: [],
     choiceResponse: {},
   };
 }
@@ -164,6 +165,7 @@ function renderGame() {
           <span style="margin-left:auto"></span>
           <button class="btn sm" data-map="use" ${mapMode === 'use' ? 'disabled' : ''}>what's growing</button>
           <button class="btn sm" data-map="soil" ${mapMode === 'soil' ? 'disabled' : ''}>soil</button>
+          <button class="btn sm" data-map="roads" ${mapMode === 'roads' ? 'disabled' : ''}>roads &amp; distance</button>
         </div>
         ${renderMap(state, { selectedId: selectedQuarter, mode: mapMode })}
         <div class="legend">${renderLegend(state, mapMode)}</div>
@@ -404,7 +406,7 @@ let pendingEnd = null;
 function onClick(e) {
   const t = e.target.closest('[data-act],[data-tab],[data-map],[data-quarter],[data-choice],' +
     '[data-bg],[data-diff],[data-buy-equip],[data-buy-stock],[data-sell-stock],' +
-    '[data-buy-land],[data-file],[data-tech],[data-will]');
+    '[data-buy-land],[data-file],[data-tech],[data-will],[data-program],[data-road]');
   if (!t) return;
 
   const act = t.dataset.act;
@@ -448,6 +450,14 @@ function onClick(e) {
   if (t.dataset.buyLand) { draft.buyLand.push(t.dataset.buyLand); render(); return; }
   if (t.dataset.file) { draft.fileHomestead = t.dataset.file; render(); return; }
   if (t.dataset.tech) { draft.adoptTech.push(t.dataset.tech); render(); return; }
+  if (t.dataset.program) {
+    draft.takeUpPrograms = [...(draft.takeUpPrograms || []), t.dataset.program];
+    render(); return;
+  }
+  if (t.dataset.road) {
+    draft.roadWorks = [...(draft.roadWorks || []), { quarterId: t.dataset.road, kind: t.dataset.roadkind }];
+    render(); return;
+  }
   if (t.dataset.will) { draft.writeWill = t.dataset.will; render(); return; }
 }
 

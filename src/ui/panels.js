@@ -11,9 +11,14 @@ import {
   debtService, creditLimit, borrowingRate, livingCost, feedRequired,
   grazingCapacity, netWorth, landValue, equipmentValue, livestockValue,
   granaryValue, labourForce, draftPower, equipmentPrice, currentVariety,
-  bestImplement, breakableAcres, seasonCapacity,
+  bestImplement, breakableAcres, seasonCapacity, fieldLogistics, timelinessFactor,
 } from '../engine/derive.js';
-import { playerQuarters, legalDescription, ACRES_PER_QUARTER, quarterById } from '../engine/land.js';
+import { offeredPrograms, isEnrolled, taxReliefLabel, PROGRAM_LIST } from '../engine/programs.js';
+import { ROAD_WORKS } from '../data/roads.data.js';
+import {
+  playerQuarters, legalDescription, ACRES_PER_QUARTER, quarterById,
+  distanceFromYard, roadFor,
+} from '../engine/land.js';
 import { CROPS, cropsAvailable, WHEAT_VARIETIES } from '../data/crops.data.js';
 import { EQUIPMENT, equipmentAvailable } from '../data/equipment.data.js';
 import { TECHNOLOGIES } from '../data/tech.data.js';
@@ -231,6 +236,29 @@ export function renderPlan(state, draft) {
   out.push(row('Sod it can break', `${Math.round(breakable.acres)} ac`));
   out.push(`<div class="row"><span class="k">Working with</span></div>
             <div style="font-size:.8rem;color:var(--ink-2);margin:-2px 0 6px">${implementSummary(state)}</div>`);
+
+  // What the distance to the fields is costing. Automatic, but visible — the
+  // player never assigns a trip, and they can always see what the scattering
+  // of their land takes off the season.
+  const log = fieldLogistics(state);
+  if (log.totalDays > 0.3) {
+    out.push(row('Days lost on the road', `${log.totalDays.toFixed(1)} days`));
+    if (log.worst && log.worst.total > 0.3) {
+      out.push(
+        `<div style="font-size:.78rem;color:var(--ink-3);margin:-2px 0 6px">` +
+          `Furthest is ${esc(log.worst.quarter)} ${log.worst.section} — ${log.worst.miles} mi ` +
+          `on ${esc(log.worst.road)}, ${log.worst.total.toFixed(1)} days of travel. ` +
+          `Travelling at ${log.speed.toFixed(0)} mph.</div>`
+      );
+    }
+    if (log.breakupDays > 0.3) {
+      out.push(
+        `<div style="font-size:.78rem;color:var(--alarm);margin:-2px 0 6px">` +
+          `${log.breakupDays.toFixed(1)} of those days are spring breakup — the road will not ` +
+          `carry a load until it dries.</div>`
+      );
+    }
+  }
   out.push(row('Draft power', `${draftPower(state).toFixed(1)} horse`));
   out.push(row('Hands available', labourForce(state).units.toFixed(1)));
   out.push('</section>');
@@ -262,7 +290,13 @@ export function renderPlan(state, draft) {
              <div class="meta">${Math.round(q.brokenAcres)} ac &middot; ${esc(CROPS[q.use] ? soilShort(q) : '')}
                &middot; fertility ${pct(q.fertility)}${
                  expected > 0 ? ` &middot; expect ${expected.toFixed(1)} ${c.unit}/ac in an average year` : ''
-               }</div>
+               }${(() => {
+                 const miles = distanceFromYard(state, q);
+                 if (miles <= 0) return ' &middot; at the yard';
+                 const loss = 1 - timelinessFactor(state, q);
+                 return ` &middot; ${miles} mi out` +
+                   (loss > 0.03 ? `, costing it ${Math.round(loss * 100)}%` : '');
+               })()}</div>
            </div>
            <select data-field="${q.id}">
              ${available
@@ -416,6 +450,78 @@ export function renderMarket(state, draft) {
                `${esc(q.ownerName || 'held')} &middot; ${money(price)}`}</div></div>
            <button class="btn sm" data-${free ? 'file' : 'buy-land'}="${q.id}" ${price > cash ? 'disabled' : ''}>
              ${price > cash ? 'too dear' : free ? 'file' : 'buy'}</button>
+         </div>`
+      );
+    }
+  }
+  out.push('</section>');
+
+  // --- government programs -------------------------------------------------
+  out.push('<section><h3>Government programs</h3>');
+  const offers = offeredPrograms(state, { yieldRatio: state.yearYieldRatio ?? 1 });
+  if (!offers.length) {
+    out.push(
+      `<div class="empty">There is nothing on offer in ${state.year}. The large farm programs ` +
+        'arrive after the thirties; before that a farmer in trouble had the municipality, ' +
+        'the neighbours, and not much else.</div>'
+    );
+  } else {
+    for (const { program: p, ok, reason } of offers) {
+      const joined = isEnrolled(state, p.id);
+      out.push(
+        `<div class="field${joined ? ' sel' : ''}">
+           <div><div class="nm">${esc(p.name)}${joined ? ' <span class="pill good">taken up</span>' : ''}</div>
+             <div class="meta">${p.cost ? `your share ${money(p.cost * (1 - (p.costShare ?? 0)))}` : ''}
+               ${p.premiumPerAcre ? `${money(p.premiumPerAcre)}/ac a year` : ''}
+               ${!ok ? ` &middot; <span style="color:var(--ink-3)">${esc(reason)}</span>` : ''}
+               <br>${esc(p.note)}</div></div>
+           <button class="btn sm" data-program="${p.id}" ${!ok || joined ? 'disabled' : ''}>
+             ${joined ? 'in' : 'take up'}</button>
+         </div>`
+      );
+    }
+  }
+  // Money that simply arrives is worth saying out loud, since the player never
+  // decides about it and would otherwise never learn it exists.
+  const autoNow = PROGRAM_LIST.filter(
+    (p) => p.kind === 'automatic' && state.year >= p.from && state.year <= p.to
+  );
+  if (autoNow.length) {
+    out.push(
+      `<div style="font-size:.78rem;color:var(--ink-3);margin-top:6px">In force this year without asking: ` +
+        autoNow.map((p) => esc(p.name)).join(', ') + '.</div>'
+    );
+  }
+  const relief = taxReliefLabel(state);
+  if (relief) {
+    out.push(`<div style="font-size:.78rem;color:var(--good);margin-top:4px">${esc(relief)}.</div>`);
+  }
+  out.push('</section>');
+
+  // --- roads ----------------------------------------------------------------
+  out.push('<section><h3>Roads</h3>');
+  const roadable = playerQuarters(state.quarters)
+    .filter((q) => distanceFromYard(state, q) > 0 && (q.roadImprovement || 0) < 2)
+    .map((q) => ({ q, loss: 1 - timelinessFactor(state, q) }))
+    .sort((a, b) => b.loss - a.loss)
+    .slice(0, 5);
+  if (!roadable.length) {
+    out.push(
+      '<div class="empty">Nothing to improve. Either everything you hold is at the yard, ' +
+        'or you have already done what can be done to the roads that serve it.</div>'
+    );
+  } else {
+    for (const { q, loss } of roadable) {
+      const gravel = state.year >= ROAD_WORKS.gravelPetition.from;
+      const spec = gravel ? ROAD_WORKS.gravelPetition : ROAD_WORKS.approach;
+      out.push(
+        `<div class="field">
+           <div><div class="nm">${esc(legalDescription(q, state.townshipLabel))}</div>
+             <div class="meta">${distanceFromYard(state, q)} mi on ${esc(roadFor(state, q).short)}
+               ${loss > 0.03 ? `&middot; losing ${Math.round(loss * 100)}% of this field` : ''}
+               <br>${esc(spec.note)}</div></div>
+           <button class="btn sm" data-road="${q.id}" data-roadkind="${spec.id}">
+             ${money(spec.cost)}</button>
          </div>`
       );
     }
