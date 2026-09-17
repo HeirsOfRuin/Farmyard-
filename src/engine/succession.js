@@ -43,8 +43,12 @@ export function needsSuccession(state) {
   const op = operator(state);
   if (!op) return { needed: true, reason: 'no operator' };
   if (op.deathYear) return { needed: true, reason: 'death', deceased: op };
-  if (age(state.year, op) >= RETIREMENT_AGE && op.wantsRetire) {
-    return { needed: true, reason: 'retirement', deceased: null };
+  if (op.wantsRetire && (age(state.year, op) >= RETIREMENT_AGE || op.role === 'spouse')) {
+    // Only retire in favour of somebody. Handing over to nobody is not
+    // retirement, it is abandoning the farm.
+    const successor = heirCandidates(state).find((c) => c.id !== op.id && c.wantsFarm);
+    if (successor) return { needed: true, reason: 'retirement', deceased: null };
+    op.wantsRetire = false;
   }
   return { needed: false };
 }
@@ -206,16 +210,45 @@ export function runSuccession(state, rng, { reason, deceased }) {
     const named = candidates.find((c) => c.id === will.heirId);
     if (named) { heir = named; log.push(`The will names ${fullName(named)}.`); }
   }
-  if (!heir) heir = candidates.find((c) => c.wantsFarm) || null;
+  // Someone who actively wants it takes it first.
+  if (!heir) heir = candidates.find((c) => c.wantsFarm === true) || null;
 
-  // The last resort: somebody who does not want it but will take it rather
-  // than see it go. On the hardest tier, nobody does.
+  // Then anyone who has not refused. A widow, or a son too young to have been
+  // asked, does not need to have declared an ambition to farm — they are
+  // already here, and the farm still needs working in the spring. Requiring an
+  // explicit yes ended nearly half of all lines with the family standing in
+  // the yard.
+  if (!heir) {
+    heir = candidates.find((c) => c.wantsFarm !== false) || null;
+    if (heir) {
+      log.push(`${fullName(heir)} took the farm on because it was there to be taken on.`);
+    }
+  }
+
+  // Last resort: somebody who actively did not want it, but will not see it
+  // go. On the hardest tier, nobody will.
   if (!heir && candidates.length && state.difficultyDef.guaranteedHeir) {
     heir = candidates[0];
     log.push(`${fullName(heir)} did not want the farm, but took it on rather than see it sold.`);
   }
 
   if (!heir) {
+    // An operator who wanted to retire and has nobody to hand over to does not
+    // end the line — they carry on. Farmers farmed into their eighties when
+    // there was no one coming after them, and it is the ordinary shape of a
+    // farm running out of family: the work gets harder, not sudden.
+    if (reason === 'retirement') {
+      const current = operator(state);
+      if (current && isAlive(current)) {
+        current.wantsRetire = false;
+        log.push(
+          `${fullName(current)} would have handed the farm over this year, but there is ` +
+            'no one to hand it to. The work carries on, and it does not get easier.'
+        );
+        return { ok: true, log, deferred: true, heir: current, generation: state.family.generation, intact: true, owed: 0, landSold: [] };
+      }
+    }
+
     state.status = STATUS.LINE_ENDED;
     state.outcome = {
       kind: 'lineEnded',

@@ -41,13 +41,21 @@ export const TRAITS = {
 export const TRAIT_IDS = Object.keys(TRAITS);
 const POSITIVE_TRAITS = TRAIT_IDS.filter((t) => !TRAITS[t].negative);
 
-let nextId = 1;
-export function resetIds() { nextId = 1; }
+/**
+ * People are numbered within their own family, from a counter carried on the
+ * family object. A module-level counter would leak between games played in
+ * one process and make identical seeds produce different-looking runs.
+ */
+function nextPersonId(fam) {
+  if (!fam) return `p${Math.floor(Math.random() * 1e9)}`; // only for isolated unit use
+  fam.nextPersonId = (fam.nextPersonId || 0) + 1;
+  return `p${fam.nextPersonId}`;
+}
 
-export function makeCharacter(rng, { surname, origin, sex, birthYear, traits = [], generation = 1 }) {
+export function makeCharacter(rng, { surname, origin, sex, birthYear, traits = [], generation = 1, fam = null }) {
   const pool = namePool(origin, sex, birthYear);
   return {
-    id: `p${nextId++}`,
+    id: nextPersonId(fam),
     name: rng.pick(pool),
     surname,
     sex,
@@ -156,7 +164,7 @@ export function birthChance(year, motherAge) {
 
 /** Create the founding settler (and, for some backgrounds, a spouse already). */
 export function foundFamily(rng, { backgroundDef, year, difficultyDef }) {
-  resetIds();
+  const fam = { nextPersonId: 0 };
   const origin = backgroundDef.origin;
   const surname = rng.pick(surnamePool(origin));
   const founderAge = rng.range(22, 34);
@@ -164,11 +172,12 @@ export function foundFamily(rng, { backgroundDef, year, difficultyDef }) {
     surname, origin, sex: 'male',
     birthYear: year - founderAge,
     traits: rollTraits(rng),
-    generation: 1,
+    generation: 1, fam,
   });
   // Every background's traits are part of who arrived, not a bonus bolted on.
   for (const t of backgroundDef.traits || []) if (!founder.traits.includes(t)) founder.traits.push(t);
   founder.role = 'operator';
+  founder.wantsFarm = true; // they crossed a continent to do this
 
   const members = [founder];
 
@@ -179,9 +188,10 @@ export function foundFamily(rng, { backgroundDef, year, difficultyDef }) {
       surname, origin, sex: 'female',
       birthYear: year - rng.range(19, founderAge + 1),
       traits: rollTraits(rng),
-      generation: 1,
+      generation: 1, fam,
     });
     spouse.role = 'spouse';
+    spouse.wantsFarm = true;
     spouse.spouseId = founder.id;
     spouse.marriedYear = year - rng.range(0, 3);
     founder.spouseId = spouse.id;
@@ -190,6 +200,7 @@ export function foundFamily(rng, { backgroundDef, year, difficultyDef }) {
   }
 
   return {
+    ...fam,
     surname,
     origin,
     operatorId: founder.id,
@@ -246,7 +257,13 @@ export function advanceFamily(state, rng) {
     const a = age(year, m);
     if (a < 20 || a > 40) continue;
     if (m.wantsFarm === false) continue;
-    const p = m.sex === 'male' ? 0.17 : 0.2;
+    // A homestead needed two people to work at all, and an unmarried
+    // homesteader looked hard and did not look long. If this man is the whole
+    // family, the farm's survival depends on it.
+    const soleOperator = m.id === fam.operatorId &&
+      fam.members.filter((x) => isAlive(x) && !x.away && age(year, x) >= 16).length === 1;
+    let p = m.sex === 'male' ? 0.17 : 0.2;
+    if (soleOperator) p = 0.42;
     if (!rng.chance(p)) continue;
 
     const spouse = makeCharacter(rng, {
@@ -255,9 +272,10 @@ export function advanceFamily(state, rng) {
       sex: m.sex === 'male' ? 'female' : 'male',
       birthYear: year - rng.range(Math.max(18, a - 6), a + 4),
       traits: rollTraits(rng),
-      generation: m.generation,
+      generation: m.generation, fam,
     });
     spouse.role = 'spouse';
+    spouse.wantsFarm = true; // marrying a farmer is choosing the farm
     spouse.spouseId = m.id;
     spouse.marriedYear = year;
     m.spouseId = spouse.id;
@@ -296,7 +314,7 @@ export function advanceFamily(state, rng) {
       sex: rng.chance(0.51) ? 'male' : 'female',
       birthYear: year,
       traits: rollTraits(rng, [m, spouse]),
-      generation: m.generation + 1,
+      generation: m.generation + 1, fam,
     });
     child.role = 'child';
     child.parentIds = [m.id, spouse.id];
@@ -343,22 +361,48 @@ export function advanceFamily(state, rng) {
 export function heirCandidates(state) {
   const year = state.year;
   return state.family.members
-    .filter((m) => isAlive(m) && !m.away && age(year, m) >= 16 && age(year, m) < 70)
+    // Fourteen, not sixteen. A boy of fourteen ran a farm when he had to, and
+    // a widow with young children held the place together until he could —
+    // which is the ordinary history of this, not an edge case.
+    .filter((m) => isAlive(m) && !m.away && age(year, m) >= 14 && age(year, m) < 72)
     .filter((m) => m.role !== 'spouse' || !state.family.members.some((x) => x.id === m.spouseId && isAlive(x)))
-    .sort((a, b) => {
-      const score = (m) => {
-        let s = 0;
-        if (m.wantsFarm) s += 100;
-        if (m.wantsFarm === false) s -= 50;
-        const ag = age(year, m);
-        if (ag >= 22 && ag <= 50) s += 30;
-        else if (ag >= 16) s += 10;
-        if (m.sex === 'male' && year < 1960) s += 15; // the custom of the time
-        if (m.traits.includes('restless')) s -= 20;
-        return s;
-      };
-      return score(b) - score(a);
-    });
+    .sort((a, b) => heirScore(state, b) - heirScore(state, a));
+}
+
+/**
+ * How naturally the farm falls to this person.
+ *
+ * The ordering that matters: a child of working age comes BEFORE a widow.
+ * A widow holds the farm when there is nobody else old enough — that is the
+ * commonest succession there is — but she holds it FOR the next generation,
+ * and hands on when a child is ready. Scoring her above the children produced
+ * fifty-year chains of widows inheriting from one another while the
+ * generations stood still and the same woman was still operating at 83.
+ */
+export function heirScore(state, m) {
+  const year = state.year;
+  const ag = age(year, m);
+  let s = 0;
+
+  if (m.wantsFarm === true) s += 100;
+  if (m.wantsFarm === false) s -= 60;
+
+  // Prime working age is what the farm actually needs.
+  if (ag >= 22 && ag <= 55) s += 40;
+  else if (ag >= 18 && ag < 22) s += 25;
+  else if (ag >= 14) s += 8;
+  if (ag > 65) s -= 30;
+
+  // A child of the line comes before somebody who married into it.
+  if (m.parentIds && m.parentIds.length > 0) s += 30;
+  // A widow is a caretaker: ahead of nobody, behind a grown child.
+  if (m.role === 'spouse') s += 12;
+  if (m.role === 'retired') s -= 20;
+
+  if (m.sex === 'male' && year < 1960) s += 12; // the custom of the time
+  if (m.traits.includes('restless')) s -= 20;
+  if (m.traits.includes('stubborn')) s += 5;
+  return s;
 }
 
 /** Everyone with a legal claim on the estate when the operator dies. */

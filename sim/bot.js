@@ -65,7 +65,10 @@ function seedCostPerAcre(state) {
 }
 
 export function makePlan(state, opts = {}) {
-  const plan = { choiceResponse: { ...BOT_CHOICES } };
+  // Choice policy is overridable so a variant bot can be run against the
+  // baseline — that is how you find out whether a decision in the game
+  // actually matters, rather than asserting that it does.
+  const plan = { choiceResponse: { ...BOT_CHOICES, ...(opts.choices || {}) } };
   const sum = farmSummary(state);
   const owned = playerQuarters(state.quarters);
   const cash = state.cash;
@@ -131,13 +134,27 @@ export function makePlan(state, opts = {}) {
     const stockUnits = Object.values(state.livestock).reduce((s, v) => s + v, 0);
     const feed = feedRequired(state);
     const hayOnHand = state.granary.hay || 0;
-    // Only add stock the farm can actually winter.
+    plan.buyLivestock = {};
+
+    // The household flock and the house cow come first. They cost almost
+    // nothing, they eat very little, and between them they are most of what
+    // the family lives on — which is worth far more than what they would
+    // fetch if sold to cover a bill.
+    if ((state.livestock.chickens || 0) < 10 && cash > 20) {
+      plan.buyLivestock.chickens = 12 - (state.livestock.chickens || 0);
+    }
+    if ((state.livestock.dairyCow || 0) < 1 && cash > reserve * 0.5) {
+      plan.buyLivestock.dairyCow = 1;
+    }
+
+    // Beyond the household, only stock the farm can actually winter.
     if (stockUnits < 30 && cash > reserve * 2 && hayOnHand > feed.hay * 1.2) {
       const id = year < 1960 ? 'dairyCow' : 'beefCow';
       const price = interpAnchors(LIVESTOCK_PRICING[id], year);
       const n = Math.floor(Math.min(3, (cash - reserve) / Math.max(1, price) / 3));
-      if (n > 0) plan.buyLivestock = { [id]: n };
+      if (n > 0) plan.buyLivestock[id] = (plan.buyLivestock[id] || 0) + n;
     }
+    if (!Object.keys(plan.buyLivestock).length) delete plan.buyLivestock;
   }
 
   // --- 6. land --------------------------------------------------------------
@@ -153,13 +170,38 @@ export function makePlan(state, opts = {}) {
   const open = wantMoreLand ? state.quarters.find((q) => !q.owner && q.tenure === 'homestead') : null;
   if (open && cash > 60 && owned.length < 12) {
     plan.fileHomestead = open.id;
-  } else if (!opts.noExpand && wantMoreLand && cash > reserve * 3) {
+  } else if (!opts.noExpand && (wantMoreLand || opts.aggressive) && cash > reserve * (opts.aggressive ? 0.8 : 3)) {
+    // Only ground actually on the market: a quarter a neighbour has put up,
+    // or company land while the railway still holds any.
     const forSale = state.quarters
-      .filter((q) => q.owner !== 'player' && q.owner !== null && (q.forSale || q.owner === 'railway'))
+      .filter((q) => q.owner !== 'player' && q.owner !== null &&
+        (q.forSale || q.owner === 'railway' || q.owner === 'school'))
       .map((q) => ({ q, price: quarterPurchasePrice(state, q) }))
       .filter((x) => x.price < (cash - reserve) * 0.8)
       .sort((a, b) => a.price - b.price);
     if (forSale.length) plan.buyLand = [forSale[0].q.id];
+  }
+
+  // An operator who believes land only goes up borrows to buy it. This is not
+  // the baseline policy — it exists so the cost of that belief can be measured
+  // against the careful one, in 1920 and in 1981.
+  const boomYears = (y) => (y >= 1880 && y <= 1883) || (y >= 1906 && y <= 1920) ||
+    (y >= 1973 && y <= 1982);
+  if (opts.aggressive && boomYears(year) && !plan.buyLand && creditLimit(state) > 500) {
+    const onMarket = state.quarters
+      .filter((q) => q.owner !== 'player' && q.owner !== null && (q.forSale || q.owner === 'railway'))
+      .map((q) => ({ q, price: quarterPurchasePrice(state, q) }))
+      .sort((a, b) => a.price - b.price);
+    if (onMarket.length) {
+      const target = onMarket[0];
+      const need = Math.max(0, target.price - cash * 0.5);
+      const sources = creditSourcesAvailable(state);
+      const src = sources.find((x) => x.maxTerm >= 10) || sources[0];
+      if (src && need > 0 && need < creditLimit(state)) {
+        plan.loans = [...(plan.loans || []), { amount: Math.ceil(need), sourceId: src.id, termYears: src.maxTerm }];
+        plan.buyLand = [target.q.id];
+      }
+    }
   }
 
   // --- 7. technology --------------------------------------------------------
@@ -192,7 +234,8 @@ export function makePlan(state, opts = {}) {
   if (!opts.noCredit && cash < reserve * 0.4 && !plan.loans) {
     const gross = estimateGrossIncome(state, sum);
     const service = debtService(state).total;
-    if (service < gross * 0.33) {
+    const serviceCeiling = opts.aggressive ? 0.75 : 0.33;
+    if (service < gross * serviceCeiling) {
       const sources = creditSourcesAvailable(state);
       const src = sources.find((x) => x.maxTerm >= 5) || sources[0];
       const limit = creditLimit(state);

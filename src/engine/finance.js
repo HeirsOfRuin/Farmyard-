@@ -11,8 +11,19 @@ import { borrowingRate, creditLimit, totalDebt, netWorth, landValue, debtService
 import { playerQuarters, quarterValueFactor, ACRES_PER_QUARTER } from './land.js';
 import { landPrice } from '../data/prices.data.js';
 
-let debtSeq = 1;
-export function resetDebtIds() { debtSeq = 1; }
+/**
+ * Allocate a debt id from the GAME's own counter.
+ *
+ * This deliberately does not use a module-level counter. The batch runner
+ * plays sixty games in one process, and a module counter would give the same
+ * seed different ids depending on what ran before it — which breaks the
+ * determinism every balance measurement depends on, silently, and only shows
+ * up as two identical runs serializing differently.
+ */
+function nextDebtId(state) {
+  state.nextDebtId = (state.nextDebtId || 0) + 1;
+  return `d${state.nextDebtId}`;
+}
 
 export const CREDIT_SOURCES = [
   { id: 'dealer', name: 'Implement dealer note', from: 1875, to: 1935, maxTerm: 3, ratePremium: 0.045,
@@ -53,7 +64,7 @@ export function borrow(state, { amount, sourceId, termYears }) {
   const term = Math.min(termYears || source.maxTerm, source.maxTerm);
   const rate = borrowingRate(state) + source.ratePremium;
   state.debts.push({
-    id: `d${debtSeq++}`,
+    id: nextDebtId(state),
     source: sourceId,
     sourceName: source.name,
     principal: amount,
@@ -124,25 +135,65 @@ export function serviceDebt(state) {
 }
 
 /**
- * Can the farm still stand? Insolvency alone is not ruin — a bad year is a bad
- * year. Sustained insolvency past the tier's grace period is.
+ * Can the farm still stand?
+ *
+ * Tested on DEBT SERVICE, not on net worth. Farms did not fail because their
+ * assets fell below their liabilities — a section of land is worth a great
+ * deal and its owner can still be finished. They failed because they could not
+ * make the payments, and the lender moved on an asset that was perfectly
+ * valuable. That is what happened in 1931 and again in 1982.
+ *
+ * Testing net worth instead made every farm invincible the moment it owned
+ * enough land: foreclosures stopped entirely after 1920 and the Depression and
+ * the interest shock cost nobody the farm, which is precisely backwards.
  */
-export function assessSolvency(state) {
+export function assessSolvency(state, { unpaidInterest = 0, soldUnderDuress = 0 } = {}) {
   const worth = netWorth(state);
   const debt = totalDebt(state);
-  const insolvent = worth < 0 || (debt > 0 && state.cash < 0);
-  if (insolvent) {
-    state.insolventYears = (state.insolventYears || 0) + 1;
+  const service = debtService(state);
+
+  // Three ways to be in trouble, any of which counts as a year of distress.
+  //
+  // The thresholds matter more than the list. A lender did not move on a farm
+  // that was a few dollars short — partial payments were carried for years,
+  // and a farmer selling stock in a bad autumn was a farmer farming, not a
+  // farmer failing. Set too tight (missing $3 of interest on a $500 note),
+  // this wiped out most of the 1880s and left nothing standing to be tested
+  // by the 1930s.
+  //
+  //   - a SUBSTANTIAL part of the year's interest went unpaid
+  //   - LAND had to be sold to meet ordinary obligations
+  //   - the farm is genuinely underwater
+  const interestDue = service.interest;
+  const couldNotPay = interestDue > 0 && unpaidInterest > interestDue * 0.35;
+  const soldToSurvive = soldUnderDuress > 0;
+  const underwater = worth < 0;
+  const distressed = couldNotPay || soldToSurvive || underwater;
+
+  if (distressed) {
+    state.distressYears = (state.distressYears || 0) + 1;
   } else {
-    state.insolventYears = 0;
+    // One clear year does not wipe the slate — a lender remembers. Recovery
+    // is real but it is not instant.
+    state.distressYears = Math.max(0, (state.distressYears || 0) - 1);
   }
+
   const grace = state.difficultyDef.foreclosureGraceYears;
+  // Credit conditions decide how patient the lender is. In 1933 and 1982 they
+  // were not patient, and the history tables say so.
+  const creditEase = state.modifiers?.creditEase ?? 1;
+  const effectiveGrace = creditEase < 0.6 ? Math.max(1, grace - 1) : grace;
+
   return {
-    insolvent,
-    years: state.insolventYears || 0,
-    foreclosing: (state.insolventYears || 0) > grace,
+    insolvent: distressed,
+    underwater,
+    couldNotPay,
+    soldToSurvive,
+    years: state.distressYears || 0,
+    foreclosing: (state.distressYears || 0) > effectiveGrace,
     netWorth: worth,
-    grace,
+    grace: effectiveGrace,
+    serviceDue: service.total,
   };
 }
 

@@ -32,7 +32,7 @@ import { landPrice, rawLandDiscount, inflate, priceIndex, cropPrice, LAST_YEAR }
 import { rollYearEvents, describeEvents } from './events.js';
 import { serviceDebt, assessSolvency, forcedLandSale, borrow, repay, creditSourcesAvailable } from './finance.js';
 import { sellGrain, livestockIncome, applySpoilage, consumeFeed, storageCapacity, interpAnchors, defaultSaleOrders } from './market.js';
-import { advanceFamily, operator, fullName, age, isAlive } from './family.js';
+import { advanceFamily, operator, fullName, age, isAlive, heirCandidates } from './family.js';
 import { runSuccession, needsSuccession, writeWill, RETIREMENT_AGE } from './succession.js';
 
 // Days available in the summer breaking window (June-July), separate from the
@@ -772,25 +772,43 @@ function phaseMarket(state, record, plan) {
   if (state.difficultyDef.offFarmWorkAvailable) {
     const labour = labourForce(state);
     const sum = farmSummary(state);
-    // Spare labour is whatever the farm's own acres do not consume. A small
-    // farm has a lot of it; a large one has none and cannot spare anybody.
-    const acresPerHand = 55;
-    const needed = sum.acresCropped / acresPerHand;
+    const wage = annualWage(state);
+
+    // Wage work came in two kinds and the distinction matters.
+    //
+    // WINTER work was available to everybody, every year, because there is no
+    // farm work in Manitoba between November and March. Men went to the
+    // lumber camps, cut cordwood, hauled freight, worked in town. It did not
+    // depend on how big the farm was.
+    //
+    // SUMMER work — railway grading gangs, the harvest excursions — was only
+    // open to labour the farm's own acres did not need, and it is what
+    // financed a homestead through the years before it could feed itself.
+    const eraAccess = state.year < 1900 ? 1.0 : state.year < 1930 ? 0.9
+      : state.year < 1950 ? 0.7 : state.year < 1970 ? 0.5 : 0.4;
+
+    const adults = state.family.members.filter((m) => {
+      if (m.deathYear || m.away) return false;
+      const a = state.year - m.birthYear;
+      return a >= 16 && a <= 65;
+    }).length;
+
+    // Winter: roughly four months at the going rate, for up to two people.
+    const winter = Math.min(adults, 2) * wage * 0.3 * eraAccess;
+
+    // Summer: only genuinely spare hands, and worth more per head.
+    const needed = sum.acresCropped / 55;
     const spare = Math.max(0, labour.family - needed);
-    if (spare > 0.1) {
-      // Wages fall as a share of farm income over the century, and by the
-      // 1960s a farm this size is not sending anyone out on a grading gang.
-      const eraAccess = state.year < 1900 ? 1.0 : state.year < 1930 ? 0.85
-        : state.year < 1950 ? 0.6 : state.year < 1970 ? 0.4 : 0.3;
-      const amount = Math.min(spare, 2) * annualWage(state) * 0.45 * eraAccess;
-      if (amount > 1) {
-        state.cash += amount;
-        record.income.offFarmWork = amount;
-        record.market.offFarmLabel = state.year < 1900
-          ? 'Worked out on the railway grade and the harvest excursion'
-          : state.year < 1950 ? 'Winter work off the farm'
-          : 'Off-farm wages';
-      }
+    const summer = Math.min(spare, 2) * wage * 0.5 * eraAccess;
+
+    const amount = winter + summer;
+    if (amount > 1) {
+      state.cash += amount;
+      record.income.offFarmWork = amount;
+      record.market.offFarmLabel = state.year < 1900
+        ? 'Winter work and the harvest excursion'
+        : state.year < 1950 ? 'Winter work off the farm'
+        : 'Off-farm wages';
     }
   }
 
@@ -908,20 +926,35 @@ function phaseSettle(state, record, plan) {
     }
   }
 
-  const solvency = assessSolvency(state);
+  const solvency = assessSolvency(state, {
+    unpaidInterest: service.unpaid,
+    // LAND only. Selling stock in a bad autumn is ordinary farm practice —
+    // it is what mixed farming is for — and counting it as distress made
+    // every hard year a step toward foreclosure.
+    soldUnderDuress: record.income.forcedLandSale || 0,
+  });
   record.settle.solvency = solvency;
+
   if (solvency.foreclosing) {
     state.status = STATUS.RUINED;
+    const why = solvency.couldNotPay
+      ? 'The interest could not be met and the lender called the mortgage.'
+      : solvency.underwater
+        ? 'The farm owed more than everything on it was worth.'
+        : 'Year after year of selling something to make the payment, until there was nothing left to sell.';
     state.outcome = {
       kind: 'foreclosed',
       year: state.year,
       generation: state.family.generation,
-      reason: `Insolvent ${solvency.years} years running. The mortgage was called and the land went.`,
+      reason: `${why} ${solvency.years} years of it.`,
     };
     record.notes.push(state.outcome.reason);
   } else if (solvency.insolvent) {
+    const left = solvency.grace + 1 - solvency.years;
     record.notes.push(
-      `The farm is insolvent — ${solvency.years} year${solvency.years > 1 ? 's' : ''} of ${solvency.grace + 1} before the lender can act.`
+      solvency.couldNotPay
+        ? `Interest went unpaid and was added to the principal. ${left} more year${left === 1 ? '' : 's'} like this and the lender can act.`
+        : `Something had to be sold to make the payments. ${left} more year${left === 1 ? '' : 's'} like this and the lender can act.`
     );
   }
 }
@@ -1061,6 +1094,18 @@ function phaseWinter(state, record, plan) {
 
   // --- succession -----------------------------------------------------------
   const op = operator(state);
+
+  // A widow who took the farm on to keep it for the children hands it over
+  // when one of them is grown and wants it. Without this the caretaker simply
+  // becomes the permanent operator and the line stops advancing.
+  if (op && !op.deathYear && op.role === 'spouse' && !op.parentIds?.length) {
+    const grown = heirCandidates(state).find(
+      (c) => c.id !== op.id && c.wantsFarm === true && c.parentIds?.length &&
+        age(state.year, c) >= 24
+    );
+    if (grown) op.wantsRetire = true;
+  }
+
   if (op && !op.deathYear && age(state.year, op) >= RETIREMENT_AGE && !op.wantsRetire) {
     // An operator past retirement age hands over when there is someone to hand
     // over to. Staying on past seventy is possible and it costs the farm.
@@ -1071,6 +1116,46 @@ function phaseWinter(state, record, plan) {
     const result = runSuccession(state, rng, { reason: need.reason, deceased: need.deceased });
     record.winter.succession = { reason: need.reason, log: result.log, ok: result.ok };
     for (const line of result.log) state.log.push({ year: state.year, kind: 'succession', text: line });
+  }
+
+  // --- the land market ------------------------------------------------------
+  // The CPR's land grant was largely sold off by about 1910, and homestead
+  // entries were essentially finished by then too. After that the only way a
+  // prairie farm got bigger was when a neighbour quit — which is why farms
+  // grew in the crises of the 1880s, the 1930s and the 1980s and barely moved
+  // in between. Without this the township is simply a shop and one family
+  // buys most of it.
+  {
+    const rngL = streamFor(state.seed, state.year, 'landmarket');
+    for (const q of state.quarters) {
+      if (q.owner === 'railway' || q.owner === 'school') {
+        // Company and school land passes into settlers' hands over time.
+        const settleChance = state.year < 1885 ? 0.04 : state.year < 1900 ? 0.11
+          : state.year < 1912 ? 0.18 : 0.35;
+        if (rngL.chance(settleChance)) {
+          q.owner = 'neighbour';
+          q.ownerName = rngL.pick(NEIGHBOUR_NAMES(state));
+          q.brokenAcres = rngL.range(20, 70);
+          q.use = 'wheat';
+        }
+      } else if (q.owner === null && state.year > 1905 && rngL.chance(0.3)) {
+        // Unclaimed homestead land does not stay unclaimed forever.
+        q.owner = 'neighbour';
+        q.ownerName = rngL.pick(NEIGHBOUR_NAMES(state));
+        q.brokenAcres = rngL.range(15, 55);
+        q.use = 'wheat';
+      }
+      // A quarter that came up for sale and was not bought is taken by
+      // somebody else. You do not get to wait for a better year.
+      if (q.forSale && q.owner === 'neighbour') {
+        if (q.forSaleSince == null) q.forSaleSince = state.year;
+        else if (state.year - q.forSaleSince >= 2 || rngL.chance(0.45)) {
+          q.forSale = false;
+          q.forSaleSince = null;
+          q.ownerName = rngL.pick(NEIGHBOUR_NAMES(state));
+        }
+      }
+    }
   }
 
   // --- neighbours in trouble sell out --------------------------------------
@@ -1121,6 +1206,14 @@ function applyDowry(state, record, rng, e) {
 }
 
 // ---------------------------------------------------------------------------
+
+/** Surnames of families already in the district, for a quarter changing hands. */
+function NEIGHBOUR_NAMES(state) {
+  const existing = [...new Set(
+    state.quarters.filter((q) => q.owner === 'neighbour' && q.ownerName).map((q) => q.ownerName)
+  )].filter((n) => n !== 'sold' && !n.includes('estate'));
+  return existing.length ? existing : [state.family.surname === 'Bell' ? 'Craik' : 'Bell'];
+}
 
 function quarterPurchasePrice(state, q) {
   const base = landPrice(state.year) * (state.regionDef.landValueFactor ?? 1);

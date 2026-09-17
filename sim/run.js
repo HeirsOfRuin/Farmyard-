@@ -25,24 +25,35 @@ export class ProgressError extends Error {}
  * Every harness that claims to simulate progress must prove progress happened.
  */
 export function assertProgress(result, { minYears = 5 } = {}) {
-  const { yearsPlayed, peakAcresBroken, harvestsTaken, endYear } = result;
-  if (yearsPlayed < minYears) {
+  const { yearsPlayed, peakAcresBroken, harvestsTaken, endYear, status, outcome } = result;
+
+  // A run that ended early because the GAME ended — the founder died before
+  // there was anyone to hand the farm to — is a real outcome, not a broken
+  // harness. Only an engine that stopped advancing while the run was still
+  // live is a harness failure. Conflating the two hides both: it reports
+  // correctness failures for balance problems, and it would let a genuinely
+  // stuck engine hide behind "well, some farms fail early".
+  const endedLegitimately = status && status !== 'active' && outcome;
+
+  if (yearsPlayed < minYears && !endedLegitimately) {
     throw new ProgressError(
-      `Run advanced only ${yearsPlayed} year(s) (${FIRST_YEAR}->${endYear}). ` +
+      `Run advanced only ${yearsPlayed} year(s) (${FIRST_YEAR}->${endYear}) and is still active. ` +
         'The engine is not advancing; every downstream number is meaningless.'
     );
   }
-  if (peakAcresBroken <= 0) {
-    throw new ProgressError(
-      `Run played ${yearsPlayed} years but never broke a single acre. ` +
-        'The farm never started; this is not a game being played.'
-    );
-  }
-  if (harvestsTaken === 0) {
-    throw new ProgressError(
-      `Run played ${yearsPlayed} years and broke ${Math.round(peakAcresBroken)} acres ` +
-        'but took no harvest in any year. Nothing is reaching the granary.'
-    );
+  if (yearsPlayed >= minYears) {
+    if (peakAcresBroken <= 0) {
+      throw new ProgressError(
+        `Run played ${yearsPlayed} years but never broke a single acre. ` +
+          'The farm never started; this is not a game being played.'
+      );
+    }
+    if (harvestsTaken === 0) {
+      throw new ProgressError(
+        `Run played ${yearsPlayed} years and broke ${Math.round(peakAcresBroken)} acres ` +
+          'but took no harvest in any year. Nothing is reaching the granary.'
+      );
+    }
   }
   return true;
 }
@@ -168,6 +179,15 @@ export function aggregate(results) {
     medianPeakAcres: median(pick((r) => r.peakAcresOwned)),
     medianRuinYear: median(pick((r) => r.ruinYear)),
     medianGenerations: median(pick((r) => r.generations)),
+    // Only completed runs. Averaging generations over runs that ended in 1890
+    // and runs that reached 2000 produces a number that describes neither.
+    medianGenerationsCompleted: median(
+      results.filter((r) => r.status === STATUS.COMPLETE).map((r) => r.generations)
+    ),
+    // Runs over before the farm was ever established. Not a bug, but if this
+    // is high the opening is too punishing to be worth playing.
+    earlyEndRate: results.filter((r) => r.yearsPlayed < 5).length / n,
+    stillbornRate: results.filter((r) => r.yearsPlayed < 3).length / n,
     medianNetWorth: median(pick((r) => r.finalNetWorth)),
     medianHarvests: median(pick((r) => r.harvestsTaken)),
     medianBushels: median(pick((r) => r.totalBushels)),
@@ -239,7 +259,8 @@ function main() {
   console.log(`  median years played                  ${fmtNum(batch.medianYearsPlayed, 6)}`);
   console.log(`  median harvests taken                ${fmtNum(batch.medianHarvests, 6)}`);
   console.log(`  median bushels over the run          ${fmtNum(batch.medianBushels, 6)}`);
-  console.log(`  median generations                   ${fmtNum(batch.medianGenerations, 6)}`);
+  console.log(`  median generations (runs to 2000)    ${fmtNum(batch.medianGenerationsCompleted, 6)}`);
+  console.log(`  runs over inside 5 years             ${fmtPct(batch.earlyEndRate)}`);
   console.log();
   console.log(`  reached 1975 with the plaque         ${fmtPct(batch.centennialRate)}`);
   console.log(`  lost the farm (foreclosure/estate)   ${fmtPct(batch.ruinRate)}`);
