@@ -5,7 +5,9 @@
 // farm number is computed here — every figure comes from derive.js, so what the
 // player is shown and what the year resolves are the same arithmetic.
 
-import { newGame, STATUS, saveToStorage, loadFromStorage, clearStorage } from '../engine/state.js';
+import {
+  newGame, STATUS, saveToStorage, loadFromStorage, clearStorage, serialize, deserialize,
+} from '../engine/state.js';
 import { runYear } from '../engine/turn.js';
 import { farmSummary, netWorth, totalDebt, croppableAcres, breakableAcres } from '../engine/derive.js';
 import { playerQuarters, legalDescription, quarterById } from '../engine/land.js';
@@ -149,6 +151,8 @@ function renderGame() {
       <div class="stat"><span class="k">Cash</span><span class="v ${state.cash < 0 ? 'neg' : ''}">${money(state.cash)}</span></div>
       <div class="stat"><span class="k">Debt</span><span class="v ${debt > 0 ? 'neg' : ''}">${money(debt)}</span></div>
       <div class="stat"><span class="k">Net worth</span><span class="v ${worth < 0 ? 'neg' : 'pos'}">${money(worth)}</span></div>
+      <button class="btn sm" data-act="export" title="Save this game to a file">save to file</button>
+      <button class="btn sm" data-act="import" title="Load a game from a file">load</button>
       <button class="btn sm" data-act="theme" title="Light or dark">◐</button>
     </div>
 
@@ -412,6 +416,8 @@ function onClick(e) {
   if (act === 'showend') { modal = pendingEnd; pendingEnd = null; render(); return; }
   if (act === 'work') { workYear(); return; }
   if (act === 'theme') { toggleTheme(); return; }
+  if (act === 'export') { exportSave(); return; }
+  if (act === 'import') { importSave(); return; }
 
   if (t.dataset.tab) { tab = t.dataset.tab; render(); return; }
   if (t.dataset.map) { mapMode = t.dataset.map; render(); return; }
@@ -455,6 +461,52 @@ function onChange(e) {
     // input the player is typing in, and the value is already captured.
     return;
   }
+}
+
+/**
+ * Write the game out to a file.
+ *
+ * Browser storage is per-origin, per-browser and per-device, and it is cleared
+ * by things people do routinely. A century of play should not live only
+ * somewhere that a cleared cache can take it.
+ */
+function exportSave() {
+  try {
+    const blob = new Blob([serialize(state)], { type: 'application/json' });
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = `centennial-farm-${state.family.surname}-${state.year}.json`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(a.href);
+  } catch (err) {
+    alert(`The game could not be written to a file: ${err?.message || 'unknown error'}`);
+  }
+}
+
+function importSave() {
+  const input = document.createElement('input');
+  input.type = 'file';
+  input.accept = 'application/json,.json';
+  input.addEventListener('change', async () => {
+    const file = input.files?.[0];
+    if (!file) return;
+    try {
+      const loaded = deserialize(await file.text());
+      state = loaded;
+      draft = freshDraft(state);
+      modal = null;
+      selectedQuarter = null;
+      saveToStorage(state);
+      render();
+    } catch (err) {
+      // Say what was wrong with it. A file that silently fails to load is
+      // indistinguishable from a game that was never saved.
+      alert(`That file could not be read as a saved game.\n\n${err?.message || 'unknown error'}`);
+    }
+  });
+  input.click();
 }
 
 function toggleTheme() {
