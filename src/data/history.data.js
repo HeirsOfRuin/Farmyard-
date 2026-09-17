@@ -136,7 +136,9 @@ export const HISTORY = [
     text: 'Wheat at thirty-five cents. Municipalities cannot collect taxes and cannot pay relief. There are families in this district living on what the garden made.',
     // Wheat is already $0.35 in the series. What this adds is the collapse
     // in land values and the disappearance of credit.
-    effects: { landMult: 0.5, creditEase: 0.25, neighbourDistress: 0.55, reliefAvailable: true },
+    // Relief itself is on programs.js's own schedule; this carries the collapse
+    // in land values and the disappearance of credit.
+    effects: { landMult: 0.5, creditEase: 0.25, neighbourDistress: 0.55 },
   },
   {
     year: 1935, id: 'rustYear', title: 'The rust year',
@@ -262,12 +264,14 @@ export const HISTORY = [
   {
     year: 1984, id: 'debtReview', title: 'The farm debt crisis',
     text: 'Foreclosure notices across the west. Auction sales every Saturday, and neighbours standing in the yard refusing to bid on a man’s machinery so he can buy it back for a dollar.',
-    effects: { neighbourDistress: 0.6, landMult: 0.82, debtReviewAvailable: true },
+    // Debt review is offered by programs.js whenever a farm is actually in
+    // trouble, which is not only in 1984.
+    effects: { neighbourDistress: 0.6, landMult: 0.82 },
   },
   {
     year: 1986, id: 'grainWar', title: 'The grain price war',
     text: 'Washington and Brussels are subsidising exports against each other and prairie wheat is caught in the middle. The price has collapsed for reasons that have nothing to do with the crop.',
-    effects: { adHocPayment: true, durationYears: 2 },
+    effects: { durationYears: 2 },
   },
   {
     year: 1988, id: 'drought88', title: 'The 1988 drought',
@@ -277,7 +281,7 @@ export const HISTORY = [
   {
     year: 1991, id: 'gripNisa', title: 'GRIP and NISA',
     text: 'New safety-net programs: a revenue guarantee, and an account you pay into in good years and draw from in bad ones. The paperwork is considerable.',
-    effects: { unlockSafetyNet: true, permanent: true },
+    effects: { permanent: true },
   },
   {
     year: 1995, id: 'crowEnds', title: 'The Crow is gone',

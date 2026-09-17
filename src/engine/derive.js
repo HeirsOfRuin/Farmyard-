@@ -216,7 +216,10 @@ export function yieldPerAcre(state, q, cropId, conditions = neutralConditions())
 
   // Rust, countered by the variety's own resistance.
   if (conditions.rustSeverity > 0) {
-    const resist = c.id === 'wheat' ? currentVariety(state).rustResist : 1 - (c.sensitivity?.rust ?? 1) * 0.6;
+    const bypassed = conditions.rustBypassed && c.id === 'wheat';
+    const resist = bypassed ? 0
+      : c.id === 'wheat' ? currentVariety(state).rustResist
+      : 1 - (c.sensitivity?.rust ?? 1) * 0.6;
     y *= clamp(1 - conditions.rustSeverity * (1 - resist), 0.05, 1);
   }
 
@@ -834,7 +837,13 @@ export function netWorth(state) {
 export function creditLimit(state) {
   const diff = diffDef(state.difficulty);
   const security = landValue(state) + equipmentValue(state) * 0.4;
-  const ease = (state.modifiers?.creditEase ?? 1) * (state.backgroundDef?.creditAccess ?? 1);
+  let ease = (state.modifiers?.creditEase ?? 1) * (state.backgroundDef?.creditAccess ?? 1);
+  // A farm that put its creditors through a write-down does not get looked at
+  // properly for years afterwards. That is the price of the relief, and it is
+  // why taking it is a decision rather than an obvious yes.
+  if (state.creditPenaltyUntil && state.year <= state.creditPenaltyUntil) {
+    ease *= 0.55;
+  }
   const limit = security * diff.maxLoanToValue * ease;
   return Math.max(0, limit - totalDebt(state));
 }

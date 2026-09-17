@@ -81,7 +81,7 @@ export const TECHNOLOGIES = {
     // Manitoba Government Telephones, publicly owned from 1908, pushed rural
     // lines much earlier here than in most places.
     from: 1908, cost: 38, costYear: 1910, annualCost: 14,
-    effect: { marketInfo: 0.15, isolation: -0.3 },
+    effect: { marketInfo: 0.15 },
     note: 'A party line to the neighbours and the elevator agent. You find out the price before you hitch up, not after.',
   },
   ruralElectrification: {
@@ -102,7 +102,7 @@ export const TECHNOLOGIES = {
   farmRadio: {
     id: 'farmRadio', name: 'Farm radio', category: 'infrastructure',
     from: 1925, cost: 55, costYear: 1928,
-    effect: { marketInfo: 0.2, weatherWarning: 0.15, isolation: -0.4 },
+    effect: { marketInfo: 0.2, weatherWarning: 0.15 },
     note: 'Noon markets and the weather, every day. The first time the outside world arrived on schedule.',
   },
 

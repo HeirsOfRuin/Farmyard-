@@ -39,35 +39,28 @@ const ALLOWED_INERT = {
   note: 'presentational',
   automatic: 'structural: the effect arrives without being bought',
   compulsoryFrom: 'structural: read from the technology table directly',
+  gameEnd: 'redundant: the engine ends the run at LAST_YEAR on its own',
+  unlockEquipmentInterest: 'flavour: the 1912 tractor demonstrations happened, and that is all',
 };
 
 /**
- * KNOWN BACKLOG — effects that are declared and read by nothing TODAY.
+ * KNOWN BACKLOG — effects declared and read by nothing.
  *
- * When this guard was first written it found thirty-five of them, which is
- * roughly four times what anyone had noticed. Rather than hide that behind a
- * passing test or leave a red suite that everyone learns to ignore, the debt
- * is written down here and the test enforces the thing that actually matters:
- * NO NEW dead effects. The list only shrinks.
+ * When this guard was written it found THIRTY-FIVE, roughly four times what
+ * anyone had noticed: most of the technology tree and nearly every policy flag
+ * in the history table. They have all since been wired up, removed, or (for
+ * two structural keys) listed in ALLOWED_INERT with a reason, so the list is
+ * empty and the assertion below is trivially true.
  *
- * Delete entries as they are wired up. When it is empty, delete the list and
- * the assertion below with it.
+ * It stays because the machinery is the point. If a future change declares an
+ * effect and forgets to read it, the test above fails immediately instead of
+ * the effect quietly becoming decoration for a year — which is exactly how the
+ * thirty-five happened.
  */
-const KNOWN_BACKLOG = new Set([
-  // --- policy and programs: being wired now ---
-  'adHocPayment', 'reliefAvailable', 'debtReviewAvailable', 'unlockSafetyNet',
-  'offerLandOnCredit', 'offerHogBarn', 'canolaBonus', 'hogExpansion',
-  'favourLivestock', 'forceSellQuarter', 'cashBonusMult', 'livestockForcedSale',
-  'poolLossIfMember',
-  // --- history mechanics that should work and do not ---
-  'unlockCrop', 'unlockEquipment', 'unlockCreditSource', 'priceFixed',
-  'priceFloor', 'priceVolatility', 'warYears', 'regionOnly', 'bypassResist',
-  'gameEnd', 'unlockEquipmentInterest',
-  // --- technology effects still decoration ---
-  'erosion', 'fuelUse', 'isolation', 'marketInfo', 'priceBonus', 'fallowNeed',
-  'canHoldGrain', 'diseaseResist', 'initialPayment', 'weatherWarning',
-  'patronageDividend',
-]);
+const KNOWN_BACKLOG = new Set([]);
+
+// Two keys are structural rather than effects, and are listed with reasons in
+// ALLOWED_INERT below rather than here.
 
 async function dataFiles() {
   const dir = join(ROOT, 'src/data');

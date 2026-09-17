@@ -15,7 +15,7 @@ import {
   farmSummary, bestImplement, seasonCapacity, labourForce, creditLimit,
   feedRequired, totalDebt, netWorth, equipmentPrice, draftPower, croppableAcres,
   livingCost, debtService, carryingCapacity, livestockUnits, breakableAcres,
-  BASE_SPRING_DAYS, BASE_HARVEST_DAYS,
+  techEffect, BASE_SPRING_DAYS, BASE_HARVEST_DAYS,
 } from '../src/engine/derive.js';
 import { playerQuarters, ACRES_PER_QUARTER, quarterById } from '../src/engine/land.js';
 import { cropsAvailable, CROPS, WHEAT_VARIETIES } from '../src/data/crops.data.js';
@@ -409,8 +409,11 @@ function chooseRotation(state, owned, opts = {}) {
   const year = state.year;
   const use = {};
   const available = new Set(cropsAvailable(year).map((c) => c.id));
-  const hasHerbicide = state.technologies.includes('herbicide24D') || state.technologies.includes('modernHerbicide');
-  const needsFallow = !hasHerbicide;
+  // How much summerfallow the farm still needs is a property of the chemistry
+  // it has, read from the technology table rather than hardcoded against two
+  // specific herbicide names.
+  const fallowRelief = Math.abs(techEffect(state, 'fallowNeed', { mode: 'min', base: 0 }));
+  const needsFallow = fallowRelief < 0.5;
   const horses = state.equipment.find((i) => i.type === 'horses' || i.type === 'oxen');
   const hasSwather = state.equipment.some((i) => i.type === 'swather');
 

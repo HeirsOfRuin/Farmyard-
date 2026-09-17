@@ -18,7 +18,7 @@ import {
   feedRequired, grazingCapacity, livingCost, annualWage, labourForce, netWorth,
   totalDebt, farmSummary, bestImplement, clamp, currentVariety, equipmentPrice,
   creditLimit, croppableAcres, breakableAcres, weedControlLevel,
-  carryingCapacity, livestockUnits, speciesCap, draftPower,
+  carryingCapacity, livestockUnits, speciesCap, draftPower, techEffect,
   BASE_THRESHING_DAYS, BASE_BREAKING_DAYS,
 } from './derive.js';
 import {
@@ -32,6 +32,10 @@ import { TECHNOLOGIES } from '../data/tech.data.js';
 import { historyFor } from '../data/history.data.js';
 import { landPrice, rawLandDiscount, inflate, priceIndex, cropPrice, LAST_YEAR } from '../data/prices.data.js';
 import { ROAD_WORKS, STATUTE_LABOUR } from '../data/roads.data.js';
+import {
+  runAutomaticPrograms, runEnrolledPrograms, takeUpProgram, quarterTaxFactor,
+  taxReliefLabel, upkeepReliefFactor, PROGRAMS,
+} from './programs.js';
 import { rollYearEvents, describeEvents } from './events.js';
 import { serviceDebt, assessSolvency, forcedLandSale, borrow, repay, creditSourcesAvailable } from './finance.js';
 import { sellGrain, livestockIncome, applySpoilage, consumeFeed, storageCapacity, interpAnchors, defaultSaleOrders } from './market.js';
@@ -158,7 +162,50 @@ function phaseHistory(state, record, plan) {
 function applyHistoryEffects(state, record, fx) {
   if (fx.unlockVariety) state.availableVarieties = [...new Set([...(state.availableVarieties || []), fx.unlockVariety])];
   if (fx.unlockTech) state.unlockedTech = [...new Set([...(state.unlockedTech || []), fx.unlockTech])];
+  if (fx.unlockCrop) state.unlockedCrops = [...new Set([...(state.unlockedCrops || []), fx.unlockCrop])];
+  if (fx.unlockEquipment) state.unlockedEquipment = [...new Set([...(state.unlockedEquipment || []), fx.unlockEquipment])];
+  if (fx.unlockCreditSource) state.unlockedCredit = [...new Set([...(state.unlockedCredit || []), fx.unlockCreditSource])];
   if (fx.compulsoryBoard) state.flags.compulsoryBoard = true;
+
+  // --- marketing institutions ---
+  // A fixed price and a floor both do the same thing to a farm: they take the
+  // downside away and the upside with it.
+  if (fx.priceFixed) state.flags.priceFixed = state.year;
+  if (fx.priceFloor) state.flags.priceFloor = true;
+  if (fx.priceVolatility != null) state.marketVolatility = fx.priceVolatility;
+  if (fx.warYears) state.flags.warYears = true;
+
+  // --- the Pool's collapse fell on its members, not on everyone ---
+  if (fx.poolLossIfMember && state.flags.joinedPool) {
+    const loss = Math.max(0, state.cash) * 0.3 + netWorth(state) * 0.04;
+    state.cash -= loss;
+    record.expenses.poolLoss = loss;
+    record.notes.push(
+      `The Pool paid out more than the wheat turned out to be worth, and the members carry it. ` +
+        `$${Math.round(loss).toLocaleString()}.`
+    );
+  }
+
+  // --- 1937: no feed, so the cattle went ---
+  if (fx.livestockForcedSale) {
+    let sold = 0;
+    let raised = 0;
+    for (const [id, count] of Object.entries(state.livestock)) {
+      const n = Math.floor(count * fx.livestockForcedSale);
+      if (n <= 0) continue;
+      const each = interpAnchors(LIVESTOCK_PRICING[id], state.year) * 0.7; // everyone is selling
+      state.livestock[id] = count - n;
+      raised += each * n;
+      sold += n;
+    }
+    if (sold > 0) {
+      state.cash += raised;
+      record.income.forcedStockSale = (record.income.forcedStockSale || 0) + raised;
+      record.notes.push(
+        `${sold} head sold because there is nothing to winter them on, at what the buyers felt like paying.`
+      );
+    }
+  }
   if (fx.centennial) {
     // The plaque requires the SAME FAMILY to have held the land a century.
     // That is the whole achievement, so it is checked, never assumed.
@@ -186,9 +233,47 @@ function applyHistoryEffects(state, record, fx) {
     }
   }
   if (fx.neighbourDistress) state.neighbourDistress = fx.neighbourDistress;
-  if (fx.forceEvent) state.forcedEvents = [...(state.forcedEvents || []), fx.forceEvent];
-  if (fx.floodSeverity) state.forcedSeverity = fx.floodSeverity;
+
+  // A forced event can be limited to the region it actually happened in. The
+  // Red River floods of 1950 and 1997 were Red River floods — without this
+  // gate they drowned farms in the Interlake and out on the Westman plains,
+  // which is a long way from the water.
+  if (fx.forceEvent) {
+    const gated = !fx.regionOnly || fx.regionOnly === state.region;
+    if (gated) {
+      state.forcedEvents = [...(state.forcedEvents || []), fx.forceEvent];
+      if (fx.floodSeverity) state.forcedSeverity = fx.floodSeverity;
+    } else {
+      record.notes.push('The valley is under water. Out here it is only a wet spring.');
+    }
+  }
+
+  // 1954: race 15B went through Thatcher as though the resistance were not
+  // there. A variety that was proof against rust last year is not this year.
+  if (fx.bypassResist) state.rustBypassVariety = fx.bypassResist;
   if (fx.joinPool) state.flags.joinedPool = true;
+
+  // --- choices that put something concrete on the table ---
+  if (fx.forceSellQuarter) {
+    const owned = playerQuarters(state.quarters).filter((q) => q.id !== state.homeQuarterId);
+    const q = owned[owned.length - 1];
+    if (q) {
+      const price = quarterPurchasePrice(state, q) * (fx.cashBonusMult ?? 1);
+      q.owner = 'neighbour'; q.ownerName = 'sold in the boom'; q.use = 'wheat';
+      state.cash += price;
+      record.income.landSale = (record.income.landSale || 0) + price;
+      record.notes.push(
+        `${q.quarter} ${q.section} sold into the boom for $${Math.round(price).toLocaleString()}.`
+      );
+    } else {
+      record.notes.push('There was nothing to sell but the home quarter, and that is not for sale.');
+    }
+  }
+  if (fx.offerLandOnCredit) state.landOnCreditOffer = fx.offerLandOnCredit;
+  if (fx.offerHogBarn) state.hogBarnOffered = true;
+  if (fx.canolaBonus) state.canolaBonus = fx.canolaBonus;
+  if (fx.hogExpansion) state.flags.hogExpansion = true;
+  if (fx.favourLivestock) state.flags.favourLivestock = true;
   if (fx.liftPayment) state.pendingLiftPayment = true;
   if (fx.forceFallowFraction) state.forceFallowFraction = fx.forceFallowFraction;
 }
@@ -375,6 +460,12 @@ function phaseSpring(state, record, plan) {
     if (imp.kind === 'fence') q.fenced = true;
     record.expenses.improvements = (record.expenses.improvements || 0) + cost;
     sp.actions.push(`${imp.kind === 'drain' ? 'Drained' : imp.kind === 'stonePick' ? 'Picked stone on' : 'Fenced'} ${q.quarter} ${q.section}.`);
+  }
+
+  // --- government programs --------------------------------------------------
+  for (const id of plan.takeUpPrograms || []) {
+    const r = takeUpProgram(state, id, record);
+    sp.actions.push(r.ok ? `Took up ${PROGRAMS[id]?.name || id}.` : r.reason);
   }
 
   // --- road work on your own access ----------------------------------------
@@ -693,7 +784,10 @@ function phaseSeason(state, record, plan) {
 
 function phaseHarvest(state, record, plan) {
   const conditions = state.yearConditions || neutralConditions();
-  const days = harvestDays(state, conditions);
+  // A radio in the kitchen gives a day's notice of what is coming, and a day is
+  // enough to get a crop off ahead of it.
+  const warned = techEffect(state, 'weatherWarning', { mode: 'max' });
+  const days = harvestDays(state, conditions) * (1 + warned);
   const cap = seasonCapacity(state, 'harvest', days);
 
   const fields = playerQuarters(state.quarters)
@@ -791,6 +885,19 @@ function phaseHarvest(state, record, plan) {
   for (const l of record.harvest.lines) {
     record.harvest.totals[l.cropId] = (record.harvest.totals[l.cropId] || 0) + l.amount;
   }
+
+  // How the year went against an average one. This single ratio is what the
+  // relief and assistance programs key on, and what a tax deferral is granted
+  // against — so it is computed once, here, from the harvest that actually
+  // happened rather than estimated again somewhere else.
+  const neutral = neutralConditions();
+  let expected = 0;
+  for (const s of standing) {
+    expected += yieldPerAcre(state, s.q, s.q.use, neutral) * s.acres;
+  }
+  const got = Object.values(record.harvest.totals).reduce((a, b) => a + b, 0);
+  record.harvest.yieldRatio = expected > 0 ? clamp(got / expected, 0, 3) : 1;
+  state.yearYieldRatio = record.harvest.yieldRatio;
 }
 
 /**
@@ -901,6 +1008,14 @@ function phaseMarket(state, record, plan) {
     record.market.regionalLabel = off.label;
   }
 
+  // Government programs. Automatic ones pay out beside the crop cheque, which
+  // is where a farmer would have seen them; enrolled ones take their premium
+  // and pay their claim.
+  const programContext = { yieldRatio: record.harvest.yieldRatio ?? 1 };
+  const paid = runAutomaticPrograms(state, record, programContext);
+  runEnrolledPrograms(state, record, programContext);
+  if (paid.length) record.market.programs = paid;
+
   if (state.pendingLiftPayment) {
     const acres = playerQuarters(state.quarters).filter((q) => q.use === 'fallow').reduce((s, q) => s + q.brokenAcres, 0);
     const payment = acres * 6;
@@ -924,19 +1039,37 @@ function phaseSettle(state, record, plan) {
   state.cash -= living;
   record.expenses.living = living;
 
+  // Fuel is a real share of upkeep, and practices that stop working the soil to
+  // dust use markedly less of it.
+  const fuelFactor = 1 - techEffect(state, 'fuelUse', { mode: 'max' }) * 0.5;
+
   // Machinery upkeep and fuel, whether it ran well or not.
   let upkeep = 0;
   for (const item of state.equipment) {
     const e = equipDef(item.type);
     upkeep += inflate((e.upkeep || 0) / (priceIndex(e.priceYear || 1875) / 100), state.year) * (item.count || 1);
   }
+  // Marked farm fuel is exempt from road tax, on the reasoning that a tractor
+  // does not use the highway. Quietly one of the largest standing farm
+  // subsidies there has ever been.
+  upkeep *= upkeepReliefFactor(state) * fuelFactor;
   state.cash -= upkeep;
   record.expenses.upkeep = upkeep;
 
-  // Municipal taxes on the land.
-  const taxes = playerQuarters(state.quarters).length * inflate(9, state.year) * quarterTaxFactor(state);
+  // Municipal and school taxes on the land, less whatever relief the era
+  // allows. In the thirties the municipality simply could not collect and
+  // everybody knew it; from 1972 the province took a share of the school tax
+  // off farm land after a century of farmers saying it should.
+  const taxContext = { yieldRatio: record.harvest.yieldRatio ?? 1 };
+  const taxFactor = quarterTaxFactor(state, taxContext);
+  const taxes = playerQuarters(state.quarters).length * inflate(9, state.year) * taxFactor;
   state.cash -= taxes;
   record.expenses.taxes = taxes;
+  if (taxFactor < 0.99) {
+    const label = taxReliefLabel(state);
+    record.settle.taxRelief = { factor: taxFactor, label };
+    if (label) record.notes.push(`${label}.`);
+  }
 
   // Statute labour: the days every ratepayer owed the municipality on the
   // roads, or the cash paid in lieu. Much resented, and for decades it was how
@@ -1086,10 +1219,6 @@ function phaseSettle(state, record, plan) {
   }
 }
 
-function quarterTaxFactor(state) {
-  return 1;
-}
-
 // ---------------------------------------------------------------------------
 // Phase 5b: winter and family
 // ---------------------------------------------------------------------------
@@ -1165,6 +1294,15 @@ function phaseWinter(state, record, plan) {
     }
     const next = q.fertility + delta;
     q.fertility = Number.isFinite(next) ? clamp(next, 0.12, 1.05) : q.fertility;
+
+    // Erosion. Working the soil black costs it; leaving trash on top, or not
+    // working it at all, holds it down. The thirties are what taught this.
+    const erosionGuard = techEffect(state, 'erosion', { mode: 'max' });
+    const bareGround = q.use === 'fallow' ? 1 : 0.35;
+    const tillTool = bestImplement(state, 'till');
+    const toolErosion = tillTool?.erosionFactor ?? 1;
+    const erosionLoss = 0.006 * bareGround * toolErosion * (1 - erosionGuard);
+    q.fertility = clamp(q.fertility - erosionLoss, 0.12, 1.05);
 
     // Weeds build on ground that is cropped and are knocked back by a year of
     // summerfallow worked black all summer — and, from 1947, by chemistry.

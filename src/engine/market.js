@@ -10,7 +10,7 @@ import { CROPS, crop as cropDef } from '../data/crops.data.js';
 import { cropPrice, freightRate, inflate } from '../data/prices.data.js';
 import { LIVESTOCK, PRODUCT_PRICING } from '../data/livestock.data.js';
 import { equipment as equipDef } from '../data/equipment.data.js';
-import { marketingCostPerBushel, clamp } from './derive.js';
+import { marketingCostPerBushel, clamp, techEffect } from './derive.js';
 
 /** Total bushels of storage on the place. */
 export function storageCapacity(state) {
@@ -54,12 +54,25 @@ export function realisedPrice(state, cropId, { gradeFactor = 1 } = {}) {
   if (state.year < 1901) price *= 0.93;
   if (state.modifiers?.gradingPenalty) price *= 1 - state.modifiers.gradingPenalty;
 
-  // The Pool paid a pooled average and a patronage dividend to members.
-  if (state.flags.joinedPool && state.year >= 1925 && state.year <= 1931) price *= 1.04;
+  // The Pool paid a pooled average and a patronage dividend back to members.
+  if (state.flags.joinedPool && state.year >= 1925 && state.year <= 1931) {
+    price *= 1 + techEffect(state, 'priceBonus', { mode: 'max', base: 0.04 });
+  }
+  if (techEffect(state, 'patronageDividend', { mode: 'max' })) {
+    // The co-op returns a share of its margin to the people who shipped through it.
+    price *= 1.02;
+  }
 
-  // The operator's own judgement counts for something.
+  // The operator's own judgement counts for something, and so does knowing what
+  // the market did this morning instead of when you get to town.
   if (state.operatorTraits?.includes('shrewd')) price *= 1.06;
-  if (state.technologies.includes('telephone') || state.technologies.includes('farmRadio')) price *= 1.02;
+  price *= 1 + techEffect(state, 'marketInfo', { mode: 'max' }) * 0.12;
+
+  // The Board's initial payment at delivery is not a higher price, it is a
+  // knowable one — the swing comes off both ends.
+  if (techEffect(state, 'initialPayment', { mode: 'max' }) && state.flags.compulsoryBoard) {
+    price = price * 0.98 + cropPrice(cropId, state.year) * 0.02;
+  }
 
   // Freight and haulage come off the top, per bushel, always.
   const marketing = c.category === 'grain' || c.category === 'oilseed'
@@ -220,12 +233,33 @@ export function retainedGrain(state, { feedRequired, seededByCrop = {} }) {
 export function defaultSaleOrders(state, context) {
   const hold = retainedGrain(state, context);
   const orders = {};
+
+  // A farm with bins and a marketing plan can decline to sell into a bad
+  // price. Before on-farm storage the crop went when it was threshed, because
+  // there was nowhere to put it — which is exactly why the elevator set the
+  // terms for the first seventy years.
+  const canHold = techEffect(state, 'canHoldGrain', { mode: 'max' });
+  const spare = storageCapacity(state) - Object.values(state.granary).reduce((a, b) => a + b, 0);
+
   for (const [cropId, amount] of Object.entries(state.granary)) {
     const c = CROPS[cropId];
     if (!c || c.feedOnly) continue;                       // hay and pasture never go to town
     if (state.year < c.from || state.year > c.to) continue;
-    const surplus = amount - (hold[cropId] || 0);
-    if (surplus > 0.5) orders[cropId] = surplus;
+    let surplus = amount - (hold[cropId] || 0);
+    if (surplus <= 0.5) continue;
+
+    if (canHold && spare > surplus * 0.4) {
+      // Judge this year's price against the run of recent years.
+      const recent = [1, 2, 3]
+        .map((back) => (state.year - back >= c.from ? cropPrice(cropId, state.year - back) : null))
+        .filter((v) => v != null);
+      if (recent.length) {
+        const avg = recent.reduce((a, b) => a + b, 0) / recent.length;
+        const now = cropPrice(cropId, state.year);
+        if (now < avg * 0.88) surplus *= 0.45; // hold most of it back for a better year
+      }
+    }
+    orders[cropId] = surplus;
   }
   return { orders, held: hold };
 }

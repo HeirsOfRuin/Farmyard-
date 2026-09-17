@@ -113,11 +113,20 @@ function applyEvent(state, rng, conditions, e, severity) {
     }
   } else if (e.tag === 'rust') {
     conditions.rustSeverity = clamp(conditions.rustSeverity + severity * scope, 0, 1);
+    // A variety that was proof against rust last year is not proof against a
+    // new race of it. 1954 is the year that lesson was taught.
+    if (state.rustBypassVariety && state.wheatVariety === state.rustBypassVariety) {
+      conditions.rustBypassed = true;
+    }
   } else if (e.tag !== 'winter' && e.tag !== 'livestock' && e.tag !== 'horses' &&
              e.tag !== 'machinery' && e.tag !== 'accident' && e.tag !== 'fire') {
     conditions.weatherYield *= clamp(1 - severity * scope, 0, 1);
   }
 
+  // A planned rotation breaks the disease cycle; continuous cropping feeds it.
+  if (e.category === 'disease') {
+    severity *= 1 - techEffect(state, 'diseaseResist', { mode: 'max' });
+  }
   if (e.moistureDrain) conditions.moistureShift -= e.moistureDrain * severity;
   if (e.seedingDaysLost) conditions.springDaysLost += Math.round(e.seedingDaysLost * severity);
   if (e.harvestDaysLost) conditions.harvestDaysLost += Math.round(e.harvestDaysLost * severity);
