@@ -186,9 +186,16 @@ export const FREIGHT_RATE = [
 
 // Annual household living cost for one adult, nominal dollars. A family scales
 // this by size and by the standard of living they hold themselves to.
+// Annual CASH cost of living per adult. Deliberately modest for the early
+// decades: a homestead household bought flour it had not grown, sugar, tea,
+// coal oil, boots, cloth, nails and matches, and made, grew or did without
+// nearly everything else. Cash was the scarce thing on a prairie farm, and
+// what left in a year was small. (An earlier set of figures ran roughly half
+// again too high and made the household 45-67% of gross income, which no farm
+// could carry.)
 export const LIVING_COST_PER_ADULT = [
-  [1875, 95], [1900, 115], [1920, 310], [1933, 185], [1945, 320],
-  [1960, 760], [1975, 2400], [1985, 5600], [2000, 9800],
+  [1875, 62], [1900, 78], [1920, 205], [1933, 125], [1945, 215],
+  [1960, 520], [1975, 1650], [1985, 3900], [2000, 6900],
 ];
 
 export function priceIndex(year) { return interpolate(PRICE_INDEX, year); }

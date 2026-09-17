@@ -64,6 +64,26 @@ export function fertilityFactor(fertility) {
   return 0.5 + 0.65 * clamp(fertility, 0, 1.1);
 }
 
+/**
+ * The virgin-prairie bonus.
+ *
+ * Land broken out of native sod grew remarkable crops for its first several
+ * years — thousands of years of grassland turned under at once — and then
+ * settled back as that reserve was used up. Twenty-five and thirty bushel
+ * wheat on new breaking is all through the settlement accounts, and it is
+ * what actually financed the first decade of a homestead: you lived on the
+ * new ground while you broke more of it.
+ *
+ * Without this the homestead era ran at a structural loss and half of all
+ * farms were gone by 1887.
+ */
+export function newBreakingFactor(q) {
+  const cropped = q.yearsCropped ?? 0;
+  if (cropped >= 6) return 1;
+  // 1.38 on the first crop, easing to 1 by the sixth.
+  return 1 + 0.38 * (1 - cropped / 6);
+}
+
 /** Moisture against a crop's own drought and wet tolerance. */
 export function moistureFactor(moisture, c) {
   const s = c.sensitivity || {};
@@ -77,6 +97,46 @@ export function moistureFactor(moisture, c) {
     return clamp(1 - excess * 0.4 * (s.excessWet ?? 1), 0.15, 1);
   }
   return 1;
+}
+
+/**
+ * Weed pressure, and what holds it down.
+ *
+ * This is the agronomic argument of the entire period. Before herbicide the
+ * only control was a year of summerfallow — which is why farmers gave up a
+ * third of their acres to grow nothing, and why 2,4-D in 1947 changed the
+ * shape of prairie farming inside a decade. Without weeds in the model, both
+ * summerfallow and herbicide are decoration, and the ablation said so: the
+ * whole technology tree moved the survival rate by exactly zero.
+ */
+export function weedControlLevel(state) {
+  let control = 0;
+  for (const id of state.technologies || []) {
+    const t = TECHNOLOGIES[id];
+    if (t?.effect?.weedControl) control = Math.max(control, t.effect.weedControl);
+  }
+  return clamp(control, 0, 0.95);
+}
+
+export function weedFactor(state, q) {
+  const pressure = clamp(q.weedPressure ?? 0.12, 0, 1);
+  const control = weedControlLevel(state);
+  // Uncontrolled weeds on long-cropped ground take a serious share of a crop.
+  return clamp(1 - pressure * (1 - control) * 0.5, 0.45, 1);
+}
+
+/** Aggregate of a named tech effect across everything the farm has adopted. */
+export function techEffect(state, key, { mode = 'max', base = 0 } = {}) {
+  let v = base;
+  for (const id of state.technologies || []) {
+    const e = TECHNOLOGIES[id]?.effect;
+    if (!e || e[key] == null) continue;
+    if (mode === 'max') v = Math.max(v, e[key]);
+    else if (mode === 'min') v = v === base ? e[key] : Math.min(v, e[key]);
+    else if (mode === 'mult') v = (v || 1) * e[key];
+    else v += e[key];
+  }
+  return v;
 }
 
 /** Penalty for growing a crop on ground that grew the same thing last year. */
@@ -135,8 +195,10 @@ export function yieldPerAcre(state, q, cropId, conditions = neutralConditions())
   if (c.rowCrop && s.rowCropBonus) y *= s.rowCropBonus;
   y *= varietyFactor(state, c);
   y *= fertilityFactor(q.fertility);
+  y *= newBreakingFactor(q);
   y *= moistureFactor(q.moisture + (conditions.moistureShift || 0), c);
   y *= rotationFactor(q, c);
+  y *= weedFactor(state, c.category === 'forage' ? { ...q, weedPressure: (q.weedPressure ?? 0) * 0.4 } : q);
   y *= techYieldFactor(state);
   y *= diff.yieldMult;
   y *= conditions.weatherYield ?? 1;
@@ -225,6 +287,10 @@ export function labourForce(state) {
   );
   let units = 0;
   for (const m of workers) units += workerUnits(state.year, m);
+  // Electrification, augers and the like gave real hours back — no more
+  // filling lamps, pumping by hand or shovelling grain up a ladder.
+  const saved = 1 + techEffect(state, 'labourSaved', { mode: 'sum' });
+  units *= saved;
   return {
     people: workers.length,
     units: units + (state.hiredHands || 0),
@@ -424,13 +490,80 @@ export function feedRequired(state) {
 }
 
 /** Animals that can be grazed rather than fed, given pasture acres. */
+/**
+ * How much stock this farm can actually carry.
+ *
+ * Barn room, grass, and winter feed. Without this the herd compounds: hogs
+ * breed at 7.5 and were multiplying more than fourfold every year with nothing
+ * to stop them, which by 1929 produced a farm with a net worth of eight and a
+ * half MILLION dollars and an income that grew straight through the Depression.
+ * Two reasonable numbers in two different files, and nobody had written down
+ * their product.
+ */
+export function carryingCapacity(state) {
+  // Barn and building room.
+  let housed = 0;
+  for (const item of state.equipment) {
+    const e = equipDef(item.type);
+    if (e.livestockCapacity) housed += e.livestockCapacity * (item.count || 1);
+  }
+  // Grass.
+  const grazed = grazingCapacity(state);
+  // Winter feed actually in the stack, at roughly what an animal eats.
+  const hay = (state.granary.hay || 0) / 2.5;
+  const grain = (state.granary.oats || 0) / 45 + (state.granary.barley || 0) / 40;
+
+  // A farm can always keep a few head around the yard, barn or no barn.
+  const base = 12;
+  return Math.max(base, Math.min(housed + base, grazed + hay + grain + base));
+}
+
+/**
+ * A hen house is not a pasture. Poultry was limited by the building and by
+ * what the local egg market would take, not by grass — and because hens are
+ * cheap and breed fast, letting them compete for the same capacity as cattle
+ * produced farms with six hundred chickens and one cow.
+ */
+export function speciesCap(state, id) {
+  if (id === 'chickens') {
+    // A farm flock, plus more once there is power for lights and water.
+    const base = 120;
+    const electrified = (state.technologies || []).includes('ruralElectrification');
+    return electrified ? 400 : base;
+  }
+  if (id === 'hogs') {
+    // Hogs need housing. The confinement barns of the 1990s are what made
+    // thousands of head possible; before that it was a pen and a few dozen.
+    const barns = state.equipment.filter((i) => equipDef(i.type).species === 'hogs');
+    const housed = barns.reduce((n, i) => n + equipDef(i.type).livestockCapacity * (i.count || 1), 0);
+    return Math.max(40, housed);
+  }
+  return Infinity;
+}
+
+/** Animal units currently on the place. */
+export function livestockUnits(state) {
+  let n = 0;
+  for (const [id, count] of Object.entries(state.livestock || {})) {
+    if (!count) continue;
+    // Poultry are not a cow. Weight them by what they actually consume.
+    const l = LIVESTOCK[id];
+    const weight = id === 'chickens' ? 0.02 : id === 'hogs' ? 0.25 : id === 'sheep' ? 0.2 : 1;
+    n += count * weight;
+  }
+  return n;
+}
+
 export function grazingCapacity(state) {
   let acres = 0;
   for (const q of playerQuarters(state.quarters)) {
     if (q.use === 'pasture') acres += workableAcres(q) || ACRES_PER_QUARTER * 0.8;
   }
-  // Roughly two acres of prairie pasture per animal unit for a season.
-  return acres / 2.2;
+  // Roughly two acres of prairie pasture per animal unit for a season, more
+  // where there is water to carry them — a drilled well and later a powered
+  // pump are what let a farm run stock it could not otherwise water.
+  const waterFactor = techEffect(state, 'livestockCapacity', { mode: 'mult', base: 1 }) || 1;
+  return (acres / 2.2) * waterFactor;
 }
 
 // ---------------------------------------------------------------------------
@@ -497,7 +630,8 @@ export function granaryValue(state) {
 }
 
 export function totalDebt(state) {
-  return (state.debts || []).reduce((sum, d) => sum + d.principal, 0);
+  // The store account is a real liability even though it carries no interest.
+  return (state.debts || []).reduce((sum, d) => sum + d.principal, 0) + (state.storeAccount || 0);
 }
 
 /** Interest plus scheduled principal owed this year. */
@@ -550,7 +684,10 @@ export function livingCost(state) {
   let cost = 0;
   for (const m of living) {
     const age = state.year - m.birthYear;
-    const share = age < 6 ? 0.4 : age < 14 ? 0.65 : 1.0;
+    // Children cost a farm household very little CASH. They ate what the place
+    // grew, wore what was made or handed down, and the difference between a
+    // family of three and a family of eight was work done, not money spent.
+    const share = age < 6 ? 0.18 : age < 14 ? 0.38 : age < 18 ? 0.6 : 1.0;
     cost += livingCostPerAdult(state.year) * share;
   }
   cost *= diff.livingCostMult * (state.standardOfLiving ?? 1);
@@ -561,12 +698,16 @@ export function livingCost(state) {
 export function subsistenceOffset(state) {
   // How much a household could provision itself fell steadily: near half in
   // the 1880s, almost nothing by the 1990s.
+  // A homestead household in the 1880s bought flour it had not grown, sugar,
+  // tea, coal oil, boots, cloth and nails. Nearly everything else it made,
+  // grew or did without, and the cash that left the farm in a year was small.
+  // That self-provisioning shrank steadily as the century went on.
   const era =
-    state.year < 1900 ? 0.46 :
-    state.year < 1920 ? 0.40 :
-    state.year < 1940 ? 0.34 :
-    state.year < 1960 ? 0.24 :
-    state.year < 1980 ? 0.14 : 0.07;
+    state.year < 1900 ? 0.58 :
+    state.year < 1920 ? 0.50 :
+    state.year < 1940 ? 0.40 :
+    state.year < 1960 ? 0.26 :
+    state.year < 1980 ? 0.15 : 0.07;
 
   // It has to actually be produced. A farm with no cow, no hens and no
   // woodlot buys its food like anybody else.
@@ -589,7 +730,8 @@ export function annualWage(state) {
 
 /** What it costs to move a bushel to the elevator and onward. */
 export function marketingCostPerBushel(state) {
-  const haul = inflate(0.04, state.year) * (state.haulMiles ?? 14) * 0.02;
+  const roadFactor = techEffect(state, 'haulCost', { mode: 'mult', base: 1 }) || 1;
+  const haul = inflate(0.04, state.year) * (state.haulMiles ?? 14) * 0.02 * roadFactor;
   return freightRate(state.year) * (state.modifiers?.freightMult ?? 1) + haul;
 }
 

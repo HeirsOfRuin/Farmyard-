@@ -17,7 +17,8 @@ import {
   yieldPerAcre, neutralConditions, seasonCapacity, springDays, harvestDays,
   feedRequired, grazingCapacity, livingCost, annualWage, labourForce, netWorth,
   totalDebt, farmSummary, bestImplement, clamp, currentVariety, equipmentPrice,
-  creditLimit, croppableAcres, breakableAcres,
+  creditLimit, croppableAcres, breakableAcres, weedControlLevel,
+  carryingCapacity, livestockUnits, speciesCap, draftPower,
   BASE_THRESHING_DAYS, BASE_BREAKING_DAYS,
 } from './derive.js';
 import {
@@ -281,7 +282,17 @@ function phaseSpring(state, record, plan) {
     const price = equipmentPrice(state, def) * (buy.count || 1);
     if (state.cash < price) { sp.actions.push(`A ${def.name.toLowerCase()} wanted $${Math.round(price).toLocaleString()}; the account would not stand it.`); continue; }
     state.cash -= price;
-    state.equipment.push({ type: buy.type, count: buy.count || 1, yearBought: state.year, condition: 1 });
+    // Merge into the existing entry rather than stacking a second one. Three
+    // separate "oxen x1" rows are three yokes of oxen eating three lots of
+    // feed, which is not what buying one more ox means.
+    const existing = state.equipment.find((i) => i.type === buy.type);
+    if (existing) {
+      existing.count = (existing.count || 1) + (buy.count || 1);
+      // A new unit alongside an old one lifts the average condition.
+      existing.condition = Math.min(1, (existing.condition ?? 1) * 0.6 + 0.4);
+    } else {
+      state.equipment.push({ type: buy.type, count: buy.count || 1, yearBought: state.year, condition: 1 });
+    }
     record.expenses.machinery = (record.expenses.machinery || 0) + price;
     sp.actions.push(`Bought a ${def.name.toLowerCase()} — $${Math.round(price).toLocaleString()}.`);
   }
@@ -498,26 +509,57 @@ function phaseSpring(state, record, plan) {
     );
   }
 
-  // Seed and inputs cost money whether or not the crop comes.
-  let seedCost = 0;
+  // Seed comes OUT OF THE BIN first, and only the shortfall is bought.
+  //
+  // A farmer kept back next year's seed from the crop — which the marketing
+  // phase already does — and buying it again at the elevator would be paying
+  // for the same bushels twice. The engine was doing exactly that: seed was
+  // held back from sale AND charged in cash, which cost more than the grain
+  // was worth (25.6% of gross against grain's 24.4%) and made the crop a
+  // losing proposition in every era.
+  let seedBought = 0;
+  let seedFromBin = 0;
   let inputCost = 0;
   const seeder = bestImplement(state, 'seed');
+  const waste = seeder?.seedWaste ?? 1.25;
+
   for (const { q } of toSeed) {
     const c = CROPS[q.use];
-    if (!c || !q.seededAcres) continue;
-    const waste = seeder?.seedWaste ?? 1.25;
-    seedCost += c.seedRate * q.seededAcres * waste * seedUnitCost(state, c);
-    for (const techId of state.technologies) {
-      const t = TECHNOLOGIES[techId];
-      if (t?.costPerAcre) inputCost += inflate(t.costPerAcre / (priceIndex(t.costYear || 1950) / 100), state.year) * q.seededAcres;
+    if (!c || !q.seededAcres || !c.seedRate) continue;
+    const needed = c.seedRate * q.seededAcres * waste;
+    const inBin = state.granary[c.id] || 0;
+    const fromBin = Math.min(inBin, needed);
+    state.granary[c.id] = inBin - fromBin;
+    seedFromBin += fromBin;
+
+    const short = needed - fromBin;
+    if (short > 0.01) {
+      // Bought seed is cleaned and graded, so it carries a premium.
+      seedBought += short * seedUnitCost(state, c);
     }
   }
-  const affordable = Math.min(seedCost + inputCost, Math.max(0, state.cash));
+
+  for (const { q } of toSeed) {
+    if (!q.seededAcres) continue;
+    for (const techId of state.technologies) {
+      const t = TECHNOLOGIES[techId];
+      if (t?.costPerAcre) {
+        inputCost += inflate(t.costPerAcre / (priceIndex(t.costYear || 1950) / 100), state.year) * q.seededAcres;
+      }
+    }
+  }
+
+  const cashNeeded = seedBought + inputCost;
+  const affordable = Math.min(cashNeeded, Math.max(0, state.cash));
   state.cash -= affordable;
-  record.expenses.seed = seedCost;
+  record.expenses.seed = seedBought;
   record.expenses.inputs = inputCost;
-  if (affordable < seedCost + inputCost - 0.5) {
-    record.notes.push('There was not enough cash for all the seed and inputs the plan called for.');
+  sp.seedFromBin = seedFromBin;
+  if (affordable < cashNeeded - 0.5) {
+    record.notes.push(
+      'There was not enough cash to buy all the seed and inputs the plan called for. ' +
+        'Keeping more of the crop back next fall would cost nothing.'
+    );
   }
 }
 
@@ -675,6 +717,7 @@ function phaseHarvest(state, record, plan) {
       missedAcres: missed,
     });
     s.q.cropHistory = [...(s.q.cropHistory || []), s.q.use].slice(-6);
+    s.q.yearsCropped = (s.q.yearsCropped ?? 0) + 1;
   }
 
   record.harvest.acresLost = lost;
@@ -791,13 +834,20 @@ function phaseMarket(state, record, plan) {
       return a >= 16 && a <= 65;
     }).length;
 
-    // Winter: roughly four months at the going rate, for up to two people.
-    const winter = Math.min(adults, 2) * wage * 0.3 * eraAccess;
+    // How readily this farm can get wage work at all is a tier difference.
+    const access = state.difficultyDef.offFarmWorkMult ?? 1;
+
+    // Winter: a few months' wages, for up to two people. Enough to carry a
+    // homestead through the years before it can feed itself, and not so much
+    // that the farm becomes a sideline to the wage — it was running at half
+    // the farm's whole income, which is a labourer with a quarter section,
+    // not a farmer.
+    const winter = Math.min(adults, 2) * wage * 0.2 * eraAccess * access;
 
     // Summer: only genuinely spare hands, and worth more per head.
     const needed = sum.acresCropped / 55;
     const spare = Math.max(0, labour.family - needed);
-    const summer = Math.min(spare, 2) * wage * 0.5 * eraAccess;
+    const summer = Math.min(spare, 2) * wage * 0.35 * eraAccess * access;
 
     const amount = winter + summer;
     if (amount > 1) {
@@ -886,10 +936,37 @@ function phaseSettle(state, record, plan) {
     state.cash += raised;
     record.income.forcedStockSale = raised;
 
-    // Then borrow. A farmer short at the end of a bad year went to the bank or
-    // the dealer before they sold land — selling ground to cover an overdraft
-    // is a last resort, not a first one, and a farm that does it every autumn
-    // is an artefact of the model rather than a farm.
+    // The store carries you.
+    //
+    // A farm short at the end of the year ran an account at the general store
+    // and settled it when the crop sold. It was not a mortgage and it did not
+    // compound at sixteen per cent — it was the ordinary way a cash-poor
+    // household bridged a winter, and everyone in the district did it.
+    //
+    // Routing every small shortfall through commercial credit instead was
+    // what produced the spiral: a farm twenty dollars short in November took
+    // an interest-bearing note, could not clear it, and was insolvent inside
+    // three years.
+    const storeLimit = inflate(45, state.year) + Math.max(0, netWorth(state)) * 0.03;
+    if (state.cash < 0 && -state.cash <= storeLimit) {
+      const carried = -state.cash;
+      state.cash = 0;
+      state.storeAccount = (state.storeAccount || 0) + carried;
+      record.income.storeCredit = carried;
+      record.notes.push(
+        `$${Math.round(carried).toLocaleString()} carried on the store account until the crop is sold.`
+      );
+    }
+
+    // The store account is settled out of the next year that can afford it.
+    if (state.storeAccount > 0 && state.cash > state.storeAccount) {
+      state.cash -= state.storeAccount;
+      record.expenses.storeAccount = state.storeAccount;
+      state.storeAccount = 0;
+    }
+
+    // Beyond what the store will carry, it is a loan. A farmer short at the
+    // end of a bad year went to the bank or the dealer before they sold land.
     if (state.cash < 0) {
       const sources = creditSourcesAvailable(state);
       const src = sources.find((x) => x.id === 'operating') || sources.find((x) => x.maxTerm <= 3) || sources[0];
@@ -1036,37 +1113,137 @@ function phaseWinter(state, record, plan) {
     }
     const next = q.fertility + delta;
     q.fertility = Number.isFinite(next) ? clamp(next, 0.12, 1.05) : q.fertility;
+
+    // Weeds build on ground that is cropped and are knocked back by a year of
+    // summerfallow worked black all summer — and, from 1947, by chemistry.
+    const control = weedControlLevel(state);
+    let weeds = q.weedPressure ?? 0.12;
+    if (q.use === 'fallow') weeds -= 0.4;
+    else if (q.use === 'pasture' || q.use === 'hay') weeds -= 0.05;
+    else weeds += 0.09 * (1 - control);
+    q.weedPressure = clamp(weeds, 0, 1);
+
     q.seededAcres = 0;
   }
 
   // --- machinery ages -------------------------------------------------------
+  // Farm machinery was repaired, welded, shimmed and kept going, not run to
+  // destruction and thrown away. Condition therefore decays TOWARD a
+  // serviceable floor rather than to zero — the annual upkeep charge is what
+  // that maintenance costs.
+  //
+  // Straight-line decay to nothing meant a walking plow became useless after
+  // fifteen years, capacity collapsed, and farms spent decades breaking two
+  // acres a year on 160 they owned. Nobody farmed like that because nobody
+  // let a plow get to that state.
   const mechanical = state.operatorTraits?.includes('mechanical');
+  const FLOOR = 0.45;
   for (const item of state.equipment) {
     const e = equipDef(item.type);
     const life = e.lifespanYears || 20;
     let wear = 1 / life;
     if (mechanical) wear *= 0.7;
-    item.condition = clamp((item.condition ?? 1) - wear, 0, 1);
+    const cond = item.condition ?? 1;
+    // Approach the floor asymptotically; upkeep holds it there.
+    item.condition = clamp(FLOOR + (cond - FLOOR) * (1 - wear * 1.6), FLOOR * 0.6, 1);
   }
-  // Worn-out machines are scrapped, and the player is told which.
-  const worn = state.equipment.filter((i) => i.condition <= 0.05);
-  for (const w of worn) record.notes.push(`The ${equipDef(w.type).name.toLowerCase()} is finished — worn out past repair.`);
-  state.equipment = state.equipment.filter((i) => i.condition > 0.05);
+  // Animals are the exception: they age out and have to be replaced.
+  for (const item of state.equipment) {
+    const e = equipDef(item.type);
+    if (e.category !== 'power' || !e.feed) continue;
+    const age = state.year - (item.yearBought || state.year);
+    if (age > (e.lifespanYears || 12)) {
+      item.count = Math.max(0, (item.count || 1) - 1);
+      if (item.count === 0) {
+        record.notes.push(`The ${e.name.toLowerCase()} is worn out with age and gone.`);
+      }
+    }
+  }
+  state.equipment = state.equipment.filter((i) => (i.count ?? 1) > 0);
 
-  // Horses breed and replace themselves; that is why horse power compounded
-  // and tractor power did not.
+  // Horses breed and replace themselves — that is why horse power compounded
+  // and tractor power did not — but a farm kept the teams it had work for and
+  // sold the rest. Every surplus team eats 55 bushels of oats a year, and an
+  // uncapped herd was eating more than half the crop by the 1890s.
+  const draftNeeded = ['till', 'seed', 'harvest']
+    .map((op) => bestImplement(state, op))
+    .filter((i) => i && !i.byHand && !i.selfPowered)
+    .reduce((m, i) => Math.max(m, i.draftNeeded || 0), 0);
+
   const horses = state.equipment.find((i) => i.type === 'horses');
   if (horses && rng.chance(0.25)) horses.count = (horses.count || 1) + 1;
 
-  // --- livestock increase ---------------------------------------------------
+  // Sell down surplus draft. Keep enough to pull the biggest implement with a
+  // margin, and at least one unit while there is still horse-drawn work.
+  if (draftNeeded > 0) {
+    const wanted = draftNeeded * 1.35;
+    for (const item of state.equipment) {
+      const e = equipDef(item.type);
+      if (e.category !== 'power' || !e.feed) continue;
+      while ((item.count || 1) > 1 && draftPower(state) - e.draft >= wanted) {
+        item.count -= 1;
+        const price = equipmentPrice(state, e) * 0.5;
+        state.cash += price;
+        record.income.surplusStockSale = (record.income.surplusStockSale || 0) + price;
+      }
+    }
+  }
+
+  // --- livestock increase, bounded by what the place can carry --------------
+  const stockman = state.operatorTraits?.includes('stockman');
   for (const [id, count] of Object.entries(state.livestock)) {
     if (!count) continue;
     const l = LIVESTOCK[id];
     if (!l) continue;
-    const stockman = state.operatorTraits?.includes('stockman');
     const born = Math.floor(count * l.breedRate * 0.5 * (stockman ? 1.15 : 1));
     const died = Math.floor(count * l.mortality * (stockman ? 0.7 : 1));
     state.livestock[id] = Math.max(0, count + born - died);
+  }
+
+  // Species that are limited by a building rather than by grass are trimmed to
+  // their own ceiling first.
+  for (const id of Object.keys(state.livestock)) {
+    const cap = speciesCap(state, id);
+    const have = state.livestock[id] || 0;
+    if (Number.isFinite(cap) && have > cap) {
+      const n = have - cap;
+      const each = interpAnchors(LIVESTOCK_PRICING[id], state.year);
+      state.livestock[id] = cap;
+      state.cash += each * n;
+      record.income.surplusStockSale = (record.income.surplusStockSale || 0) + each * n;
+    }
+  }
+
+  // Increase beyond the farm's carrying capacity is sold, which is exactly
+  // what a farmer did every fall: you keep what you can winter and the rest
+  // goes to town. Without this the herd compounds without limit.
+  const capacity = carryingCapacity(state);
+  let units = livestockUnits(state);
+  if (units > capacity) {
+    const keepShare = capacity / units;
+    let sold = 0;
+    let proceeds = 0;
+    // Sell the increase, heaviest feeders first.
+    for (const id of ['hogs', 'sheep', 'beefCow', 'dairyCow', 'chickens']) {
+      const have = state.livestock[id] || 0;
+      if (!have) continue;
+      const keep = Math.max(id === 'chickens' ? 8 : 1, Math.floor(have * keepShare));
+      const n = have - keep;
+      if (n <= 0) continue;
+      const each = interpAnchors(LIVESTOCK_PRICING[id], state.year);
+      state.livestock[id] = keep;
+      proceeds += each * n;
+      sold += n;
+      if (livestockUnits(state) <= capacity) break;
+    }
+    if (sold > 0) {
+      state.cash += proceeds;
+      record.income.surplusStockSale = (record.income.surplusStockSale || 0) + proceeds;
+      record.notes.push(
+        `${sold} head sold off — the place will winter about ${Math.round(capacity)} animal units ` +
+          'and there is no feed or room for more.'
+      );
+    }
   }
 
   // --- prove up the homestead ----------------------------------------------
@@ -1136,6 +1313,14 @@ function phaseWinter(state, record, plan) {
           q.brokenAcres = rngL.range(20, 70);
           q.use = 'wheat';
         }
+      } else if (q.owner === 'neighbour' && !q.forSale && state.year >= 1945 && rngL.chance(consolidationRate(state.year))) {
+        // The prairies emptied out. Manitoba had roughly 58,000 farms in 1941
+        // and half that by 1991 — the survivors farmed the difference. Without
+        // this the land market closes in 1910 and farms are stuck at a size
+        // that cannot carry a $100,000 combine, which is why almost nobody
+        // reached 2000.
+        q.forSale = true;
+        q.forSaleSince = state.year;
       } else if (q.owner === null && state.year > 1905 && rngL.chance(0.3)) {
         // Unclaimed homestead land does not stay unclaimed forever.
         q.owner = 'neighbour';
@@ -1204,6 +1389,17 @@ function applyDowry(state, record, rng, e) {
 }
 
 // ---------------------------------------------------------------------------
+
+/**
+ * How often a neighbour gives up, by era. The post-war decades emptied the
+ * countryside steadily, and the debt crisis of the 1980s emptied it fast.
+ */
+function consolidationRate(year) {
+  if (year >= 1980 && year <= 1990) return 0.055; // the farm debt crisis
+  if (year >= 1960) return 0.035;
+  if (year >= 1945) return 0.025;
+  return 0;
+}
 
 /** Surnames of families already in the district, for a quarter changing hands. */
 function NEIGHBOUR_NAMES(state) {

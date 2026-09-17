@@ -6,7 +6,7 @@
 // what keeps the planning preview and the harvest honest with each other.
 
 import { EVENTS, eventsFor, EVENT_SCOPES } from '../data/events.data.js';
-import { neutralConditions, clamp } from './derive.js';
+import { neutralConditions, clamp, techEffect } from './derive.js';
 import { playerQuarters } from './land.js';
 import { inflate } from '../data/prices.data.js';
 
@@ -62,6 +62,21 @@ export function rollYearEvents(state, rng, { forced = [], severityOverride = nul
       : rng.float(e.severity[0], e.severity[1]);
     if (!e.beneficial) severity *= diff.hazardSeverity;
     severity = clamp(severity, 0, 1);
+
+    // A well and a pump take some of the edge off a dry year — water that does
+    // not have to be hauled is the first real capital improvement on dry land.
+    if (!e.beneficial && e.tag === 'drought') {
+      severity *= 1 - techEffect(state, 'droughtResist', { mode: 'max' });
+    }
+
+    // Crop insurance puts a floor under the worst year. Premiums every year
+    // for a floor under one of them: the arithmetic only looks foolish until
+    // it does not. This was declared in the data and read by nothing, which
+    // made the whole decision a cosmetic one.
+    const insuredFloor = techEffect(state, 'disasterFloor', { mode: 'max' });
+    if (!e.beneficial && insuredFloor > 0) {
+      severity = Math.min(severity, 1 - insuredFloor);
+    }
 
     // The floor is a difficulty flag, not a scalar: on Homesteader a disaster
     // cannot take more than a set share of the crop; on Sodbuster there is no

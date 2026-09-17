@@ -9,7 +9,7 @@
 
 import { borrowingRate, creditLimit, totalDebt, netWorth, landValue, debtService } from './derive.js';
 import { playerQuarters, quarterValueFactor, ACRES_PER_QUARTER } from './land.js';
-import { landPrice } from '../data/prices.data.js';
+import { landPrice, inflate } from '../data/prices.data.js';
 
 /**
  * Allocate a debt id from the GAME's own counter.
@@ -54,7 +54,13 @@ export function borrow(state, { amount, sourceId, termYears }) {
     return { ok: false, reason: `${source.name} is not available in ${state.year}.` };
   }
   if (amount <= 0) return { ok: false, reason: 'Nothing to borrow.' };
-  const limit = creditLimit(state);
+  // An implement dealer's note is secured on the implement itself, so a small
+  // one is available even to a farm the land-based limit would refuse. That is
+  // precisely what these notes existed for, and without it a farm whose plow
+  // wore out simply wound down with no way to replace a fifty dollar tool.
+  const limit = source.id === 'dealer'
+    ? Math.max(creditLimit(state), inflate(60, state.year))
+    : creditLimit(state);
   if (amount > limit) {
     return { ok: false, reason: `${source.name} will advance at most $${Math.floor(limit)} against what you have.` };
   }
@@ -165,7 +171,16 @@ export function assessSolvency(state, { unpaidInterest = 0, soldUnderDuress = 0 
   //   - LAND had to be sold to meet ordinary obligations
   //   - the farm is genuinely underwater
   const interestDue = service.interest;
-  const couldNotPay = interestDue > 0 && unpaidInterest > interestDue * 0.35;
+
+  // A lender does not move on a farm over trivial arrears. Where the debt is
+  // small against what the place is worth, being short of the interest is a
+  // bad year, not the beginning of a foreclosure — the note gets carried and
+  // everyone gets on with it. Without this floor a homestead owing $100 could
+  // be foreclosed over five dollars of unpaid interest, three years running,
+  // and half of all farms were gone by 1887.
+  const material = debt > Math.max(0, worth) * 0.15;
+
+  const couldNotPay = material && interestDue > 0 && unpaidInterest > interestDue * 0.35;
   const soldToSurvive = soldUnderDuress > 0;
   const underwater = worth < 0;
   const distressed = couldNotPay || soldToSurvive || underwater;

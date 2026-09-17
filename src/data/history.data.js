@@ -49,7 +49,7 @@ export const HISTORY = [
   {
     year: 1886, id: 'cprComplete', title: 'The line is through to the coast',
     text: 'The Canadian Pacific is complete and running. Manitoba wheat can reach Liverpool, and it can reach it at a price.',
-    effects: { haulMiles: -0.2, priceMult: 1.08 },
+    effects: { haulMiles: -0.2 },
   },
   {
     year: 1890, id: 'elevatorRow', title: 'The elevator question',
@@ -84,7 +84,7 @@ export const HISTORY = [
   {
     year: 1914, id: 'warBegins', title: 'War',
     text: 'Britain is at war and so, therefore, is Canada. Young men are going from every district. Wheat is suddenly a strategic commodity.',
-    effects: { priceMult: 1.3, labourShortage: 0.25, warYears: true, durationYears: 5 },
+    effects: { labourShortage: 0.25, warYears: true, durationYears: 5 },
   },
   {
     year: 1917, id: 'fixedPrice', title: 'The Board of Grain Supervisors',
@@ -99,7 +99,9 @@ export const HISTORY = [
   {
     year: 1920, id: 'postwarCollapse', title: 'The bottom falls out',
     text: 'The wartime boards wind up, the European buyers have no money, and wheat falls from two dollars to one inside a year. Land bought at the peak is worth half the note against it.',
-    effects: { priceMult: 0.62, landMult: 0.72, creditEase: 0.55, neighbourDistress: 0.3 },
+    // No priceMult: the wheat series already falls from $1.85 to $1.05 here.
+    // Multiplying it again double-counts the collapse.
+    effects: { landMult: 0.72, creditEase: 0.55, neighbourDistress: 0.3 },
   },
   {
     year: 1924, id: 'wheatPool', title: 'The Pool',
@@ -116,22 +118,25 @@ export const HISTORY = [
   {
     year: 1928, id: 'recordCrop', title: 'The record crop',
     text: 'The biggest wheat crop the prairies have ever grown. The elevators are plugged, the cars are short, and the price is sagging under the weight of it.',
-    effects: { yieldMult: 1.3, priceMult: 0.88 },
+    effects: { yieldMult: 1.3 },
   },
   {
     year: 1929, id: 'crash', title: 'The crash',
     text: 'New York has collapsed and the wheat market with it. The Pool has paid out an initial price higher than wheat is now worth and cannot cover the difference.',
-    effects: { priceMult: 0.7, creditEase: 0.4, landMult: 0.82 },
+    // The series carries the price collapse; this carries the credit freeze.
+    effects: { creditEase: 0.4, landMult: 0.82 },
   },
   {
     year: 1931, id: 'poolCollapse', title: 'The Pools go under',
     text: 'The provincial governments have had to guarantee the Pools’ overdrafts. The central selling agency is finished. Farmers who signed in 1924 are learning what a pooled loss looks like.',
-    effects: { priceMult: 0.78, poolLossIfMember: true },
+    effects: { poolLossIfMember: true },
   },
   {
     year: 1933, id: 'depthOfDepression', title: 'The bottom',
     text: 'Wheat at thirty-five cents. Municipalities cannot collect taxes and cannot pay relief. There are families in this district living on what the garden made.',
-    effects: { priceMult: 0.82, landMult: 0.5, creditEase: 0.25, neighbourDistress: 0.55, reliefAvailable: true },
+    // Wheat is already $0.35 in the series. What this adds is the collapse
+    // in land values and the disappearance of credit.
+    effects: { landMult: 0.5, creditEase: 0.25, neighbourDistress: 0.55, reliefAvailable: true },
   },
   {
     year: 1935, id: 'rustYear', title: 'The rust year',
@@ -191,7 +196,7 @@ export const HISTORY = [
   {
     year: 1961, id: 'chinaWheat', title: 'The China wheat sale',
     text: 'Canada has sold China more wheat than anyone thought existed as a single order. The carryover that has been hanging over the price for a decade is simply gone.',
-    effects: { priceMult: 1.18, durationYears: 3 },
+    effects: { durationYears: 3 },
   },
   {
     year: 1966, id: 'versatile', title: 'Versatile builds a four-wheel-drive',
@@ -223,7 +228,7 @@ export const HISTORY = [
   {
     year: 1972, id: 'sovietSale', title: 'The Soviet grain deal',
     text: 'The Russians have bought the world’s surplus almost overnight. The carryover is gone and the price is doing something it has not done in fifty years.',
-    effects: { priceMult: 1.25, durationYears: 3 },
+    effects: { durationYears: 3 },
   },
   {
     year: 1975, id: 'centennial', title: 'One hundred years',
@@ -262,12 +267,12 @@ export const HISTORY = [
   {
     year: 1986, id: 'grainWar', title: 'The grain price war',
     text: 'Washington and Brussels are subsidising exports against each other and prairie wheat is caught in the middle. The price has collapsed for reasons that have nothing to do with the crop.',
-    effects: { priceMult: 0.72, adHocPayment: true, durationYears: 2 },
+    effects: { adHocPayment: true, durationYears: 2 },
   },
   {
     year: 1988, id: 'drought88', title: 'The 1988 drought',
     text: 'The driest year since the thirties. The one consolation is that everyone else is short too, and the price is the highest it has been in years.',
-    effects: { forceEvent: 'drought', priceMult: 1.35 },
+    effects: { forceEvent: 'drought' },
   },
   {
     year: 1991, id: 'gripNisa', title: 'GRIP and NISA',

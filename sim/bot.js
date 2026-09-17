@@ -14,7 +14,8 @@
 import {
   farmSummary, bestImplement, seasonCapacity, labourForce, creditLimit,
   feedRequired, totalDebt, netWorth, equipmentPrice, draftPower, croppableAcres,
-  livingCost, debtService, BASE_SPRING_DAYS, BASE_HARVEST_DAYS,
+  livingCost, debtService, carryingCapacity, livestockUnits, breakableAcres,
+  BASE_SPRING_DAYS, BASE_HARVEST_DAYS,
 } from '../src/engine/derive.js';
 import { playerQuarters, ACRES_PER_QUARTER, quarterById } from '../src/engine/land.js';
 import { cropsAvailable, CROPS, WHEAT_VARIETIES } from '../src/data/crops.data.js';
@@ -108,9 +109,10 @@ export function makePlan(state, opts = {}) {
   const breaker = bestImplement(state, 'till');
   if (breaker?.canBreakSod) {
     plan.breakAcres = {};
-    // Break toward what the outfit can actually crop, plus a little, so
-    // breaking leads capacity rather than chasing a number it cannot work.
-    const target = Math.max(20, croppableAcres(state).acres * 1.25);
+    // Break toward what the outfit can crop, plus a margin so breaking LEADS
+    // capacity rather than trailing it — a farm that only breaks what it can
+    // already seed never has a reason to buy a bigger plow, and never grows.
+    const target = Math.max(20, croppableAcres(state).acres * 1.6);
     let deficit = target - sum.acresBroken;
     for (const q of owned) {
       if (deficit <= 0) break;
@@ -131,27 +133,35 @@ export function makePlan(state, opts = {}) {
 
   // --- 5. livestock ---------------------------------------------------------
   if (!opts.noLivestock) {
-    const stockUnits = Object.values(state.livestock).reduce((s, v) => s + v, 0);
     const feed = feedRequired(state);
     const hayOnHand = state.granary.hay || 0;
     plan.buyLivestock = {};
 
-    // The household flock and the house cow come first. They cost almost
-    // nothing, they eat very little, and between them they are most of what
-    // the family lives on — which is worth far more than what they would
-    // fetch if sold to cover a bill.
+    // The household flock and the house cow come first — they are most of what
+    // the family lives on. But only if there is feed for them: buying a cow
+    // every spring and selling her every November at three-quarters price is
+    // a standing loss, and the bot was doing exactly that for decades.
+    const canFeed = hayOnHand >= feed.hay || year === 1875;
     if ((state.livestock.chickens || 0) < 10 && cash > 20) {
       plan.buyLivestock.chickens = 12 - (state.livestock.chickens || 0);
     }
-    if ((state.livestock.dairyCow || 0) < 1 && cash > reserve * 0.5) {
+    if ((state.livestock.dairyCow || 0) < 1 && cash > reserve * 0.5 && canFeed) {
       plan.buyLivestock.dairyCow = 1;
     }
 
+    // A barn is what lets a farm carry stock through a Manitoba winter, and
+    // without one the herd is capped at whatever can live in the yard.
+    const hasBarn = state.equipment.some((i) => i.type === 'barn');
+    if (!hasBarn && cash > reserve * 2.5) {
+      plan.buyEquipment = [...(plan.buyEquipment || []), { type: 'barn', count: 1 }];
+    }
+
     // Beyond the household, only stock the farm can actually winter.
-    if (stockUnits < 30 && cash > reserve * 2 && hayOnHand > feed.hay * 1.2) {
+    const room = carryingCapacity(state) - livestockUnits(state);
+    if (room > 2 && cash > reserve * 2 && hayOnHand > feed.hay * 1.2) {
       const id = year < 1960 ? 'dairyCow' : 'beefCow';
       const price = interpAnchors(LIVESTOCK_PRICING[id], year);
-      const n = Math.floor(Math.min(3, (cash - reserve) / Math.max(1, price) / 3));
+      const n = Math.floor(Math.min(3, room, (cash - reserve) / Math.max(1, price) / 3));
       if (n > 0) plan.buyLivestock[id] = (plan.buyLivestock[id] || 0) + n;
     }
     if (!Object.keys(plan.buyLivestock).length) delete plan.buyLivestock;
@@ -162,10 +172,15 @@ export function makePlan(state, opts = {}) {
   // has to be broken before it earns anything, so acquiring more of it than
   // you can crop is a straight drain — the farm pays to own acres it never
   // turns a furrow on.
-  const capacity = croppableAcres(state);
-  const roomToGrow = sum.acresBroken < capacity.acres * 1.4;
-  const nearlyFull = sum.acresBroken > sum.acresOwned * 0.55;
-  const wantMoreLand = !roomToGrow || nearlyFull;
+  // Buying land you cannot break is a straight cost: taxes on ground that
+  // grows nothing. Only look for more when most of what you hold is working —
+  // OR when the outfit has capacity to spare, which is the modern situation:
+  // a combine that will take off 4,000 acres on a 640-acre farm is the reason
+  // farms had to get bigger, and a bot that never buys land cannot show it.
+  const worked = sum.acresOwned > 0 ? sum.acresBroken / sum.acresOwned : 0;
+  const outfit = croppableAcres(state);
+  const spareCapacity = outfit.acres > sum.acresBroken * 1.5;
+  const wantMoreLand = worked > 0.6 || spareCapacity;
 
   const open = wantMoreLand ? state.quarters.find((q) => !q.owner && q.tenure === 'homestead') : null;
   if (open && cash > 60 && owned.length < 12) {
@@ -275,7 +290,9 @@ function restorePowerPurchase(state, cash) {
     const impl = bestImplement(state, op);
     if (impl && !impl.byHand) needed = Math.max(needed, impl.draftNeeded || 0);
   }
-  if (needed === 0 || draft >= needed * 0.75) return null;
+  // Enough power to pull the biggest implement, with a working margin. More
+  // than that is animals eating oats for nothing.
+  if (needed === 0 || draft >= needed * 1.05) return null;
 
   const options = equipmentAvailable(state.year, 'power')
     .map((d) => ({ type: d.id, price: equipmentPrice(state, d), draft: d.draft }))
@@ -295,8 +312,23 @@ function restorePowerPurchase(state, cash) {
 function findBottleneckUpgrade(state, budget) {
   if (budget <= 0) return null;
   const year = state.year;
+  const sum = farmSummary(state);
   const base = croppableAcres(state);
   const candidates = [];
+
+  // Capacity is only worth what there is ground to use it on — a combine that
+  // could take off four thousand acres is worth nothing to a farm with three
+  // hundred broken. But "ground" means land the farm OWNS, not land it has
+  // already broken.
+  //
+  // Valuing it against broken acres alone created a deadlock: breaking is
+  // limited by machine capacity, and machine upgrades were valued by acres
+  // already broken, so each capped the other. Farms sat on 960 owned acres
+  // with 150 broken for decades, paying taxes on land they never touched.
+  const breakRate = breakableAcres(state).acres;
+  const reachable = Math.min(sum.acresOwned, sum.acresBroken + breakRate * 4);
+  const usable = Math.max(20, reachable);
+  const effective = (c) => Math.min(c.acres, usable);
 
   // Anything that performs field work, plus power to pull it. Machines the
   // farm already owns are included only if worn out — a plow at 10% is not
@@ -312,7 +344,7 @@ function findBottleneckUpgrade(state, budget) {
     if (price > budget) continue;
 
     const withIt = croppableAcres(state, def.id);
-    const gain = withIt.acres - base.acres;
+    const gain = effective(withIt) - effective(base);
     if (gain <= 0.5) continue;
     candidates.push({ type: def.id, gain, price, op: def.operation || 'power' });
   }
@@ -335,8 +367,9 @@ function creditPurchase(state, cash) {
   const sources = creditSourcesAvailable(state);
   const dealer = sources.find((x) => x.id === 'dealer') || sources.find((x) => x.maxTerm >= 3);
   if (!dealer) return null;
-  const room = creditLimit(state);
-  if (room < 20) return null;
+  // An implement note is secured on the implement, so it does not depend
+  // entirely on what the land will carry.
+  const room = Math.max(creditLimit(state), 80);
 
   let best = null;
   for (const def of equipmentAvailable(state.year)) {
@@ -344,8 +377,17 @@ function creditPurchase(state, cash) {
     const owned = state.equipment.find((i) => i.type === def.id);
     if (owned && (owned.condition ?? 1) > 0.3) continue;
     const price = estimatePrice(state, def);
-    if (price > room + cash || price > cash * 6) continue;
-    const gain = croppableAcres(state, def.id).acres - base.acres;
+    // A cheap implement that restores a collapsed capacity is worth a note
+    // even when the books are tight: without the plow there is no crop, and
+    // without a crop there is no way out. The old ceiling of six times cash
+    // left farms unable to replace a fifty dollar plow and simply winding down.
+    const ceiling = Math.max(cash * 6, room + cash, 60);
+    if (price > ceiling) continue;
+    const sum2 = farmSummary(state);
+    const usableNow = Math.max(20, Math.min(
+      sum2.acresOwned, sum2.acresBroken + breakableAcres(state).acres * 4));
+    const gain = Math.min(croppableAcres(state, def.id).acres, usableNow) -
+                 Math.min(base.acres, usableNow);
     if (gain < 8) continue; // only worth a note if it changes the farm materially
     const score = gain / Math.max(1, price);
     if (!best || score > best.score) best = { type: def.id, price, gain, score, sourceId: dealer.id, term: dealer.maxTerm };
@@ -369,27 +411,46 @@ function chooseRotation(state, owned, opts = {}) {
   const available = new Set(cropsAvailable(year).map((c) => c.id));
   const hasHerbicide = state.technologies.includes('herbicide24D') || state.technologies.includes('modernHerbicide');
   const needsFallow = !hasHerbicide;
-  const stockUnits = Object.values(state.livestock).reduce((s, v) => s + v, 0);
   const horses = state.equipment.find((i) => i.type === 'horses' || i.type === 'oxen');
   const hasSwather = state.equipment.some((i) => i.type === 'swather');
 
-  // The money crop of the era.
+  const cropped = owned.filter((q) => q.brokenAcres >= 1);
+  const totalAcres = cropped.reduce((t, q) => t + q.brokenAcres, 0);
+
+  // How much FEED the farm actually has to grow, in acres.
+  //
+  // Sized from the feed requirement, not from a head count: counting a dozen
+  // hens as "twelve stock" put the farm's only quarter into hay and left it
+  // with no grain to sell for five years running.
+  const feed = feedRequired(state);
+  const hayYield = 1.4;
+  let hayAcres = Math.min(feed.hay / hayYield, totalAcres * 0.3);
+  if (hayAcres < 1 && feed.hay > 0) hayAcres = Math.min(4, totalAcres * 0.25);
+
   let cashCrop = 'wheat';
   if (!opts.noDiversify && available.has('canola') && hasSwather) cashCrop = 'canola';
 
+  // Oats for the teams: horses eat about 55 bushels a year each.
+  const teams = state.equipment
+    .filter((i) => i.type === 'horses' || i.type === 'oxen')
+    .reduce((n, i) => n + (i.count || 1), 0);
+  const oatsBushels = teams * 55 * 2;
+  let oatAcres = Math.min(oatsBushels / 30, totalAcres * 0.25);
+
+  let hayLeft = hayAcres;
+  let oatLeft = horses ? oatAcres : 0;
   let i = 0;
+
   for (const q of owned) {
     if (q.brokenAcres < 1) { use[q.id] = 'idle'; continue; }
-    const cycle = i % (needsFallow ? 3 : 4);
     let pick;
-    if (needsFallow && cycle === 2) pick = 'fallow';
-    else if ((horses || stockUnits > 0) && cycle === 1) pick = 'oats';
-    else if (cycle === 3) pick = available.has('barley') ? 'barley' : 'wheat';
-    else pick = cashCrop;
 
-    // Keep enough hay and pasture to winter the stock that is actually here.
-    if (stockUnits > 6 && i === 0) pick = 'hay';
-    if (stockUnits > 18 && i === 1) pick = 'pasture';
+    // Feed first, in whole fields, smallest commitment that covers it.
+    if (hayLeft >= q.brokenAcres * 0.5) { pick = 'hay'; hayLeft -= q.brokenAcres; }
+    else if (oatLeft >= q.brokenAcres * 0.5) { pick = 'oats'; oatLeft -= q.brokenAcres; }
+    else if (needsFallow && i % 3 === 2) pick = 'fallow';
+    else if (!opts.noDiversify && i % 4 === 3 && available.has('barley')) pick = 'barley';
+    else pick = cashCrop;
 
     use[q.id] = available.has(pick) ? pick : 'wheat';
     i++;

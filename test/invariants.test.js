@@ -39,10 +39,12 @@ function playChecked(seed, difficulty = 'settler', background = 'ontario', maxYe
 
       // Every number on a quarter must stay a number. NaN in fertility
       // silently makes every future harvest on that quarter NaN.
-      for (const k of ['fertility', 'moisture', 'brokenAcres', 'seededAcres']) {
+      for (const k of ['fertility', 'moisture', 'brokenAcres', 'seededAcres', 'weedPressure', 'yearsCropped']) {
         assert.ok(Number.isFinite(q[k]), `${record.year} ${q.id}: ${k} is ${q[k]}`);
       }
       assert.ok(q.fertility > 0 && q.fertility <= 1.1, `${record.year} ${q.id}: fertility ${q.fertility}`);
+      assert.ok(q.weedPressure >= 0 && q.weedPressure <= 1,
+        `${record.year} ${q.id}: weed pressure ${q.weedPressure}`);
       assert.ok(CROPS[q.use], `${record.year} ${q.id}: unknown crop "${q.use}"`);
     }
 
@@ -141,13 +143,20 @@ test('the planning figure and the resolving figure are the same number', () => {
     const state = newGame({ seed });
     for (let i = 0; i < 25; i++) {
       const plan = makePlan(state);
-      const boughtSomething = (plan.buyEquipment || []).length > 0;
+      // Anything in the plan that changes the OUTFIT changes the capacity
+      // legitimately: a machine bought before seeding, or a hand hired. Those
+      // are different inputs, not drift. Hiring was missed originally and the
+      // extra crew doubled capacity, which read as a 2x drift.
+      const changedOutfit =
+        (plan.buyEquipment || []).length > 0 ||
+        (plan.sellEquipment || []).length > 0 ||
+        (plan.hiredHands ?? 0) !== (state.hiredHands ?? 0);
       const before = croppableAcres(state);
       const { record } = runYear(state, plan);
       if (!record) break;
 
       const possible = record.spring.acresPossible || 0;
-      if (!boughtSomething) {
+      if (!changedOutfit) {
         assert.ok(Math.abs(possible - before.spring) < 0.01,
           `${record.year}: planning said ${before.spring.toFixed(2)} acres, ` +
             `the engine used ${possible.toFixed(2)} — the two derivations have drifted`);

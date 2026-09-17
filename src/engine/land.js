@@ -93,6 +93,8 @@ export function generateTownship(rng, regionDef) {
           cropHistory: [],
           fertility: 0.9, // virgin prairie is rich and will not stay that way
           moisture: 0.55,
+          weedPressure: 0.05, // native sod starts clean; cropping is what seeds it
+          yearsCropped: 0,    // new breaking grows a remarkable first few crops
           drained: false,
           stonePicked: false,
           fenced: false,
