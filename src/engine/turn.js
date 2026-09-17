@@ -23,7 +23,7 @@ import {
 } from './derive.js';
 import {
   ACRES_PER_QUARTER, playerQuarters, quarterById, workableAcres,
-  breakingCostPerAcre, quarterValueFactor,
+  breakingCostPerAcre, quarterValueFactor, roadFor, distanceFromYard,
 } from './land.js';
 import { crop as cropDef, CROPS, cropsAvailable, WHEAT_VARIETIES } from '../data/crops.data.js';
 import { equipment as equipDef, EQUIPMENT } from '../data/equipment.data.js';
@@ -31,6 +31,7 @@ import { LIVESTOCK, LIVESTOCK_PRICING } from '../data/livestock.data.js';
 import { TECHNOLOGIES } from '../data/tech.data.js';
 import { historyFor } from '../data/history.data.js';
 import { landPrice, rawLandDiscount, inflate, priceIndex, cropPrice, LAST_YEAR } from '../data/prices.data.js';
+import { ROAD_WORKS, STATUTE_LABOUR } from '../data/roads.data.js';
 import { rollYearEvents, describeEvents } from './events.js';
 import { serviceDebt, assessSolvency, forcedLandSale, borrow, repay, creditSourcesAvailable } from './finance.js';
 import { sellGrain, livestockIncome, applySpoilage, consumeFeed, storageCapacity, interpAnchors, defaultSaleOrders } from './market.js';
@@ -376,6 +377,33 @@ function phaseSpring(state, record, plan) {
     sp.actions.push(`${imp.kind === 'drain' ? 'Drained' : imp.kind === 'stonePick' ? 'Picked stone on' : 'Fenced'} ${q.quarter} ${q.section}.`);
   }
 
+  // --- road work on your own access ----------------------------------------
+  for (const work of plan.roadWorks || []) {
+    const q = quarterById(state.quarters, work.quarterId);
+    const spec = ROAD_WORKS[work.kind];
+    if (!q || !spec || q.owner !== 'player') continue;
+    if (spec.from && state.year < spec.from) {
+      sp.actions.push(`${spec.name} is not something the council does yet.`);
+      continue;
+    }
+    if ((q.roadImprovement || 0) >= 2) {
+      sp.actions.push(`The road to ${q.quarter} ${q.section} is as good as it is going to get.`);
+      continue;
+    }
+    const cost = inflate(spec.cost, state.year);
+    if (state.cash < cost) {
+      sp.actions.push(`${spec.name} to ${q.quarter} ${q.section} wanted ${'$' + Math.round(cost).toLocaleString()}.`);
+      continue;
+    }
+    state.cash -= cost;
+    q.roadImprovement = (q.roadImprovement || 0) + spec.levels;
+    record.expenses.roadWork = (record.expenses.roadWork || 0) + cost;
+    sp.actions.push(
+      `${spec.name} to ${q.quarter} ${q.section} — $${Math.round(cost).toLocaleString()}. ` +
+        `It is ${roadFor(state, q).short} now.`
+    );
+  }
+
   // --- assign the fields ----------------------------------------------------
   const available = new Set(cropsAvailable(state.year).map((c) => c.id));
   for (const q of playerQuarters(state.quarters)) {
@@ -410,8 +438,11 @@ function phaseSpring(state, record, plan) {
   // against the seeding window produces a farm that breaks land every spring
   // and never gets a crop planted.
   const conditions = neutralConditions();
-  const days = springDays(state, conditions);
+  // Days owed to the municipality and worked off are days not spent farming.
+  const statuteDays = state.statuteDaysWorked || 0;
+  const days = Math.max(6, springDays(state, conditions) - statuteDays);
   sp.springDays = days;
+  if (statuteDays > 0) sp.statuteDaysLost = statuteDays;
 
   const breakPlan = Object.entries(plan.breakAcres || {});
   const breakCapacity = breakableAcres(state);
@@ -906,6 +937,27 @@ function phaseSettle(state, record, plan) {
   const taxes = playerQuarters(state.quarters).length * inflate(9, state.year) * quarterTaxFactor(state);
   state.cash -= taxes;
   record.expenses.taxes = taxes;
+
+  // Statute labour: the days every ratepayer owed the municipality on the
+  // roads, or the cash paid in lieu. Much resented, and for decades it was how
+  // prairie roads got built at all. Paying the commutation is the default
+  // because a plan that says nothing should not cost the player a working week
+  // by surprise; working it off is a real choice when cash is short.
+  if (state.year >= STATUTE_LABOUR.from && state.year <= STATUTE_LABOUR.to) {
+    const quarters = playerQuarters(state.quarters).length;
+    const daysOwed = quarters * STATUTE_LABOUR.daysOwedPerQuarter;
+    const commutation = daysOwed * inflate(STATUTE_LABOUR.commutationPerDay, state.year);
+    if (plan.workStatuteLabour && daysOwed > 0) {
+      state.statuteDaysWorked = daysOwed;
+      record.settle.statuteLabour = { days: daysOwed, paid: 0 };
+      record.notes.push(`${daysOwed} days worked out on the roads in lieu of the road tax.`);
+    } else if (commutation > 0) {
+      state.cash -= commutation;
+      state.statuteDaysWorked = 0;
+      record.expenses.roadTax = commutation;
+      record.settle.statuteLabour = { days: 0, paid: commutation };
+    }
+  }
 
   const service = serviceDebt(state);
   record.expenses.interest = service.entries.reduce((s, e) => s + e.interest, 0);

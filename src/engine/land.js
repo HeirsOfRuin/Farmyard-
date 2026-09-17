@@ -17,6 +17,7 @@
 // homesteader's second quarter cost money when their first did not.
 
 import { SOILS, soil as soilDef } from '../data/regions.data.js';
+import { municipalRoadLevel, roadClassByLevel } from '../data/roads.data.js';
 
 export const ACRES_PER_QUARTER = 160;
 export const QUARTER_CODES = ['NW', 'NE', 'SW', 'SE'];
@@ -98,11 +99,27 @@ export function generateTownship(rng, regionDef) {
           drained: false,
           stonePicked: false,
           fenced: false,
+          // How far behind the municipality's general standard this particular
+          // road allowance runs. Some get graded early because a councillor
+          // lives on them; some are still two ruts long after the rest are
+          // gravel. Fixed at generation so the map is stable.
+          roadLag: 0,
+          // Work the FARM has paid for on its own access: an approach, a
+          // culvert, a share of the gravel.
+          roadImprovement: 0,
           yearAcquired: null,
           acquiredBy: null,
         });
       }
     }
+  }
+
+  // Road standing: some allowances are simply better served than others, and
+  // it does not change once the survey is on the ground.
+  for (const q of quarters) {
+    q.roadLag = rng.weighted([
+      { n: 0, weight: 42 }, { n: 1, weight: 38 }, { n: 2, weight: 20 },
+    ]).n;
   }
 
   // Two smoothing passes: each quarter may adopt a neighbour's soil. This turns
@@ -143,6 +160,44 @@ export function seedNeighbours(rng, quarters, surnames, homeQuarterId) {
     }
   }
   return quarters;
+}
+
+// A quarter section is a half mile square, so one step on the grid is half a
+// mile of road.
+export const MILES_PER_CELL = 0.5;
+
+/**
+ * Road miles between two quarters.
+ *
+ * Manhattan, not straight-line: the survey put road allowances on the grid and
+ * you travel along them — over and then up. There is no diagonal to take, and
+ * pretending otherwise would understate every distance on the map.
+ */
+export function distanceBetween(a, b) {
+  if (!a || !b) return 0;
+  return (Math.abs(a.row - b.row) + Math.abs(a.col - b.col)) * MILES_PER_CELL;
+}
+
+/** Road miles from the home quarter — the yard — to a given quarter. */
+export function distanceFromYard(state, q) {
+  const home = quarterById(state.quarters, state.homeQuarterId);
+  return distanceBetween(home, q);
+}
+
+/**
+ * The road class serving a quarter this year: what the municipality has
+ * generally reached, less this allowance's own lag, plus whatever the farm has
+ * paid for itself. Derived rather than stored, so a change to the timeline
+ * applies to a save in progress instead of leaving it on last version's roads.
+ */
+export function roadLevelFor(state, q) {
+  const municipal = municipalRoadLevel(state.year);
+  const level = municipal - (q.roadLag || 0) + (q.roadImprovement || 0);
+  return Math.max(0, Math.min(3, level));
+}
+
+export function roadFor(state, q) {
+  return roadClassByLevel(roadLevelFor(state, q));
 }
 
 export function quarterById(quarters, id) {

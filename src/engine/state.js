@@ -91,6 +91,7 @@ export function newGame({ seed = 1, difficulty = 'settler', background = 'ontari
     cash: Math.round(bg.startingCapital * diff.startingCapitalMult),
     debts: [],
     storeAccount: 0, // carried at the general store until the crop is sold
+    statuteDaysWorked: 0, // days owed the municipality on the roads, worked off
     equipment,
     livestock,
     granary: {},

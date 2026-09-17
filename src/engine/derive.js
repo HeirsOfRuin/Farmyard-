@@ -21,7 +21,12 @@ import { TECHNOLOGIES } from '../data/tech.data.js';
 import { difficulty as diffDef } from '../data/difficulty.data.js';
 import {
   ACRES_PER_QUARTER, playerQuarters, quarterValueFactor, workableAcres,
+  distanceFromYard, roadFor,
 } from './land.js';
+import {
+  ROAD_SPEED, ON_FOOT_MPH, TRAVEL_HOURS_PER_DAY, TRIPS_SPRING, TRIPS_HARVEST,
+  TRANSPORT_PENALTY, ROAD_CLASSES, HAUL_SHARE_IN_HARVEST,
+} from '../data/roads.data.js';
 import {
   landPrice, cropPrice, interestRate, livingCostPerAdult, inflate, inflateWage,
   freightRate, priceIndex,
@@ -199,6 +204,8 @@ export function yieldPerAcre(state, q, cropId, conditions = neutralConditions())
   y *= moistureFactor(q.moisture + (conditions.moistureShift || 0), c);
   y *= rotationFactor(q, c);
   y *= weedFactor(state, c.category === 'forage' ? { ...q, weedPressure: (q.weedPressure ?? 0) * 0.4 } : q);
+  // Pasture does not care how far away it is; a crop very much does.
+  if (!c.grazed) y *= timelinessFactor(state, q);
   y *= techYieldFactor(state);
   y *= diff.yieldMult;
   y *= conditions.weatherYield ?? 1;
@@ -393,6 +400,169 @@ export function seasonCapacity(state, operation, daysAvailable) {
   return { acres: perDay * daysAvailable, perDay, implement: impl, crews, byHand };
 }
 
+// ---------------------------------------------------------------------------
+// Getting there
+// ---------------------------------------------------------------------------
+
+/**
+ * How fast the farm can move itself down a road, in miles per hour.
+ *
+ * The farm travels at the pace of its best power unit — you hitch the fast
+ * thing to move the outfit — and with nothing at all you walk. This single
+ * number is what makes distance punishing in 1880 and trivial in 1965: two
+ * miles an hour behind oxen against fifteen behind a diesel tractor.
+ */
+export function travelSpeed(state) {
+  let best = ON_FOOT_MPH;
+  for (const item of state.equipment || []) {
+    const mph = ROAD_SPEED[item.type];
+    if (mph && mph > best) best = mph;
+  }
+  return best;
+}
+
+/**
+ * Bushels the farm can move in one trip. The wagon box that defined the first
+ * fifty years held forty-five; the three-ton truck that replaced it holds two
+ * hundred and forty, and that alone changed what land was worth owning.
+ */
+export function haulCapacity(state) {
+  let best = 0;
+  for (const item of state.equipment || []) {
+    const e = equipDef(item.type);
+    if (e.haulCapacity) best = Math.max(best, e.haulCapacity * (item.count || 1));
+  }
+  // With nothing to haul in, you borrow a neighbour's or you make do.
+  return best || 30;
+}
+
+/** Extra hours per trip to fold, move and re-set the widest machine owned. */
+export function transportPenalty(state) {
+  let worst = 0;
+  for (const item of state.equipment || []) {
+    const p = TRANSPORT_PENALTY[item.type];
+    if (p && p > worst) worst = p;
+  }
+  return worst;
+}
+
+/**
+ * Timeliness: what a field loses for being a long way from the yard.
+ *
+ * This, not the arithmetic of travel days, is what actually made the back
+ * quarter worth less. Distant land got seeded last and so missed the moisture,
+ * got worked fewer times, got cut late and stood longer in the weather. On a
+ * horse farm three miles out that is a fifth of the crop; behind a diesel
+ * tractor on gravel it is nothing, which is precisely why farms could spread
+ * across a township after the war and could not before it.
+ *
+ * It reads the same travel speed and road class the day-cost does, so the two
+ * cannot drift apart, and it lands on the yield the player is already shown for
+ * that field rather than in a number nobody looks at.
+ */
+export function timelinessFactor(state, q) {
+  const miles = distanceFromYard(state, q);
+  if (miles <= 0) return 1;
+  const road = roadFor(state, q);
+  const effectiveMph = Math.max(0.4, travelSpeed(state) * road.speedFactor);
+  const hoursOneWay = miles / effectiveMph;
+  // A tenth of the crop for every hour the outfit spends getting there, to a
+  // floor — even the furthest corner of a township still grows something.
+  const penalty = Math.min(0.35, hoursOneWay * 0.10);
+  return 1 - penalty;
+}
+
+/**
+ * What scattered land costs in working days.
+ *
+ * Every field away from the yard has to be reached, and the outfit has to come
+ * home again. On a trail behind a team that is most of a day each way; on
+ * gravel behind a tractor it is ten minutes. The days come straight off the
+ * season, which is why this is the thing that decides whether a farm can be
+ * spread across a township or has to be gathered around one yard.
+ *
+ * This is the single source for the cost — croppableAcres() subtracts it, the
+ * plan panel reports it, and the bot reads it when deciding what land to buy.
+ */
+export function fieldLogistics(state, conditions = null) {
+  const speed = travelSpeed(state);
+  const penalty = transportPenalty(state);
+  const fields = [];
+  let springDaysLost = 0;
+  let harvestDaysLost = 0;
+
+  for (const q of playerQuarters(state.quarters)) {
+    if (q.brokenAcres < 1) continue;
+    const c = CROPS[q.use];
+    if (!c || ['idle', 'bush'].includes(q.use)) continue;
+
+    const miles = distanceFromYard(state, q);
+    const road = roadFor(state, q);
+    // Pasture is walked to once and left; it does not carry an outfit back and
+    // forth all season.
+    const grazedOnly = q.use === 'pasture';
+
+    const effectiveMph = Math.max(0.4, speed * road.speedFactor);
+    const roundTripHours = (2 * miles) / effectiveMph + (miles > 0 ? penalty : 0);
+
+    const springTrips = grazedOnly ? 0 : TRIPS_SPRING;
+
+    // Hauling is the real cost of a distant field, and it scales with the CROP,
+    // not with a fixed number of visits. A hundred and twenty acres at fifteen
+    // bushels is eighteen hundred bushels, and a wagon box holds forty-five —
+    // that is forty loads, each one a round trip. A three-ton truck holds two
+    // hundred and forty and collapses the same job to eight.
+    //
+    // Not all of it lands in the harvest window: a great deal of grain moved in
+    // winter, on sleighs, over snow, when there was nothing else to do and the
+    // going was good. Only the share that competes with harvest is charged
+    // here; the rest is absorbed into a season with days to spare.
+    const expectedBushels = grazedOnly ? 0 : yieldPerAcre(state, q, q.use, neutralConditions()) * q.brokenAcres;
+    const loads = expectedBushels > 0 ? expectedBushels / haulCapacity(state) : 0;
+    // Hauling ran in parallel. A farm at harvest put every wagon, every team
+    // and every available body on the road at once, and neighbours traded work
+    // besides. Charging it all to one outfit made distant land cost 87% of a
+    // farm's capacity, which is not a constraint, it is a prohibition.
+    const haulOutfits = Math.max(1, Math.min(4, Math.floor(labourForce(state).units)));
+    const haulTripsInSeason = (loads * HAUL_SHARE_IN_HARVEST) / haulOutfits;
+    const harvestTrips = grazedOnly ? 0 : TRIPS_HARVEST + haulTripsInSeason;
+
+    const spring = (roundTripHours * springTrips) / TRAVEL_HOURS_PER_DAY;
+    const harvest = (roundTripHours * harvestTrips) / TRAVEL_HOURS_PER_DAY;
+
+    springDaysLost += spring;
+    harvestDaysLost += harvest;
+    fields.push({
+      id: q.id, quarter: q.quarter, section: q.section,
+      miles, road: road.short, roadLevel: road.level,
+      springDays: spring, harvestDays: harvest, total: spring + harvest,
+    });
+  }
+
+  // Spring breakup. A poor road in a wet spring will not carry a loaded wagon
+  // at all until it dries, which is exactly what a road ban still means.
+  let breakupDays = 0;
+  const wetness = conditions?.springDaysLost || 0;
+  if (wetness > 0 && fields.length) {
+    const worstRoad = Math.min(...fields.map((f) => f.roadLevel));
+    const cls = ROAD_CLASSES[Math.max(0, Math.min(ROAD_CLASSES.length - 1, worstRoad))];
+    breakupDays = cls.breakupDays * Math.min(1, wetness / 9);
+    springDaysLost += breakupDays;
+  }
+
+  fields.sort((a, b) => b.total - a.total);
+  return {
+    speed,
+    transportPenalty: penalty,
+    springDaysLost,
+    harvestDaysLost,
+    breakupDays,
+    fields,
+    worst: fields[0] || null,
+    totalDays: springDaysLost + harvestDaysLost,
+  };
+}
+
 /**
  * Acres the farm can actually put into crop in a season.
  *
@@ -412,10 +582,16 @@ export function croppableAcres(state, extra = null) {
     ? { ...state, equipment: [...state.equipment, { type: extra, count: 1, condition: 1, yearBought: state.year }] }
     : state;
   const cond = neutralConditions();
-  const days = springDays(probe, cond);
+  // Days on the road are days not in the field. Subtracted here so the number
+  // the planning screen shows, the number the engine seeds against and the
+  // number the bot plans with are all the same one.
+  const logistics = fieldLogistics(probe, cond);
+  const days = Math.max(3, springDays(probe, cond) - logistics.springDaysLost);
+  const harvestDaysLeft = Math.max(3, harvestDays(probe, cond) - logistics.harvestDaysLost);
+
   const till = seasonCapacity(probe, 'till', days);
   const seed = seasonCapacity(probe, 'seed', days);
-  const harvest = seasonCapacity(probe, 'harvest', harvestDays(probe, cond));
+  const harvest = seasonCapacity(probe, 'harvest', harvestDaysLeft);
 
   const tillRate = till.perDay || 0.0001;
   const seedRate = seed.perDay || 0.0001;
@@ -423,6 +599,8 @@ export function croppableAcres(state, extra = null) {
   return {
     spring: springLimit,
     harvest: harvest.acres,
+    logistics,
+    daysOnTheRoad: logistics.totalDays,
     // A crop you cannot take off is not a crop.
     acres: Math.min(springLimit, harvest.acres),
     tillPerDay: till.perDay,

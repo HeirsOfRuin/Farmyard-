@@ -10,8 +10,8 @@ import assert from 'node:assert/strict';
 
 import { newGame, STATUS, serialize, deserialize } from '../src/engine/state.js';
 import { runYear } from '../src/engine/turn.js';
-import { playerQuarters } from '../src/engine/land.js';
-import { netWorth, farmSummary, croppableAcres } from '../src/engine/derive.js';
+import { playerQuarters, distanceFromYard, distanceBetween } from '../src/engine/land.js';
+import { netWorth, farmSummary, croppableAcres, timelinessFactor, fieldLogistics } from '../src/engine/derive.js';
 import { makePlan } from '../sim/bot.js';
 import { CROPS } from '../src/data/crops.data.js';
 
@@ -45,6 +45,15 @@ function playChecked(seed, difficulty = 'settler', background = 'ontario', maxYe
       assert.ok(q.fertility > 0 && q.fertility <= 1.1, `${record.year} ${q.id}: fertility ${q.fertility}`);
       assert.ok(q.weedPressure >= 0 && q.weedPressure <= 1,
         `${record.year} ${q.id}: weed pressure ${q.weedPressure}`);
+      // Geography: an unset roadLag or roadImprovement would reach arithmetic
+      // and produce NaN, which is how fertility was silently poisoned before.
+      assert.ok(Number.isFinite(q.roadLag), `${record.year} ${q.id}: roadLag ${q.roadLag}`);
+      assert.ok(Number.isFinite(q.roadImprovement),
+        `${record.year} ${q.id}: roadImprovement ${q.roadImprovement}`);
+      const d = distanceFromYard(state, q);
+      assert.ok(Number.isFinite(d) && d >= 0, `${record.year} ${q.id}: distance ${d}`);
+      const t = timelinessFactor(state, q);
+      assert.ok(t > 0 && t <= 1, `${record.year} ${q.id}: timeliness ${t}`);
       assert.ok(CROPS[q.use], `${record.year} ${q.id}: unknown crop "${q.use}"`);
     }
 
@@ -133,6 +142,61 @@ test('the same seed always produces the same run', () => {
   assert.equal(play(), play(), 'determinism is what makes balance measurement possible');
 });
 
+test('distance is symmetric, zero at home, and never diagonal', () => {
+  const state = newGame({ seed: 12 });
+  const qs = state.quarters;
+  for (const a of qs.slice(0, 8)) {
+    for (const b of qs.slice(0, 8)) {
+      const ab = distanceBetween(a, b);
+      const ba = distanceBetween(b, a);
+      assert.equal(ab, ba, `distance is not symmetric between ${a.id} and ${b.id}`);
+      assert.ok(ab >= 0, 'distance is negative');
+      if (a.id === b.id) assert.equal(ab, 0, 'a quarter is not zero miles from itself');
+      // Manhattan: you travel the road allowances, so the distance is never
+      // shorter than the straight line would be.
+      const straight = Math.hypot(a.row - b.row, a.col - b.col) * 0.5;
+      assert.ok(ab >= straight - 1e-9, `${a.id}->${b.id} took a diagonal shortcut`);
+    }
+  }
+  const home = qs.find((q) => q.id === state.homeQuarterId);
+  assert.equal(distanceFromYard(state, home), 0, 'the yard is not zero miles from itself');
+});
+
+test('a gathered farm out-works a scattered one, and less so as speed rises', () => {
+  // The claim the whole geography layer makes. If it cannot be measured it is
+  // decoration and should be cut rather than shipped.
+  const build = (year, equip, spread) => {
+    const st = newGame({ seed: 5 });
+    st.year = year;
+    for (const m of st.family.members) { m.birthYear = year - 35; m.deathYear = null; m.away = false; }
+    const home = st.quarters[10];
+    st.homeQuarterId = home.id;
+    const sorted = [...st.quarters].sort((a, b) => distanceFromYard(st, a) - distanceFromYard(st, b));
+    const pick = spread ? [sorted[0], ...sorted.slice(-3)] : sorted.slice(0, 4);
+    for (const q of pick) { q.owner = 'player'; q.brokenAcres = 120; q.use = 'wheat'; }
+    st.equipment = st.equipment.filter((e) => !['oxen', 'horses', 'dieselTractor', 'grainTruck', 'wagon'].includes(e.type));
+    for (const t of equip) st.equipment.push({ type: t, count: 1, condition: 1, yearBought: year });
+    return st;
+  };
+
+  const yieldOf = (st) => playerQuarters(st.quarters)
+    .reduce((sum, q) => sum + timelinessFactor(st, q), 0) / playerQuarters(st.quarters).length;
+
+  const slowTight = yieldOf(build(1885, ['oxen', 'wagon'], false));
+  const slowSpread = yieldOf(build(1885, ['oxen', 'wagon'], true));
+  const fastTight = yieldOf(build(1975, ['dieselTractor', 'grainTruck'], false));
+  const fastSpread = yieldOf(build(1975, ['dieselTractor', 'grainTruck'], true));
+
+  const slowPenalty = slowTight - slowSpread;
+  const fastPenalty = fastTight - fastSpread;
+
+  assert.ok(slowPenalty > 0.05,
+    `scattering a horse-era farm should cost real yield, cost ${(slowPenalty * 100).toFixed(1)}%`);
+  assert.ok(fastPenalty < slowPenalty / 3,
+    `speed should largely erase the penalty: slow ${(slowPenalty * 100).toFixed(1)}%, ` +
+      `fast ${(fastPenalty * 100).toFixed(1)}%`);
+});
+
 test('the planning figure and the resolving figure are the same number', () => {
   // The acres the player is told they can crop and the acres the engine
   // actually seeds must come from ONE function. Where the plan changes the
@@ -143,14 +207,21 @@ test('the planning figure and the resolving figure are the same number', () => {
     const state = newGame({ seed });
     for (let i = 0; i < 25; i++) {
       const plan = makePlan(state);
-      // Anything in the plan that changes the OUTFIT changes the capacity
-      // legitimately: a machine bought before seeding, or a hand hired. Those
-      // are different inputs, not drift. Hiring was missed originally and the
-      // extra crew doubled capacity, which read as a 2x drift.
+      // Anything in the plan that changes the INPUTS changes the capacity
+      // legitimately, and that is not drift. Three things do it:
+      //   - buying or selling a machine before seeding
+      //   - hiring a hand (an extra crew, which doubled capacity and read as 2x)
+      //   - changing what a field grows, because capacity now depends on the
+      //     road time to the fields actually in crop
+      const changedFieldUse = Object.entries(plan.fieldUse || {}).some(([id, use]) => {
+        const q = state.quarters.find((x) => x.id === id);
+        return q && q.use !== use;
+      });
       const changedOutfit =
         (plan.buyEquipment || []).length > 0 ||
         (plan.sellEquipment || []).length > 0 ||
-        (plan.hiredHands ?? 0) !== (state.hiredHands ?? 0);
+        (plan.hiredHands ?? 0) !== (state.hiredHands ?? 0) ||
+        changedFieldUse;
       const before = croppableAcres(state);
       const { record } = runYear(state, plan);
       if (!record) break;
