@@ -368,6 +368,28 @@ export function croppableAcres(state, extra = null) {
   };
 }
 
+// Days in the summer breaking window (June-July), after seeding and before
+// harvest. Breaking did not compete with seeding — it was its own job.
+export const BASE_BREAKING_DAYS = 42;
+
+/**
+ * Acres of native sod the outfit can turn in one season.
+ *
+ * Asked by the engine when it resolves breaking AND by the UI to default the
+ * breaking input, so the number the player is offered is the number they will
+ * actually get.
+ */
+export function breakableAcres(state) {
+  const impl = bestImplement(state, 'till');
+  if (!impl || !impl.canBreakSod) {
+    return { acres: 0, perDay: 0, implement: impl, reason: 'nothing on the place will turn native sod' };
+  }
+  // Slower than working broken ground, but not by much with a walking plow:
+  // contemporary accounts put it near an acre a day behind oxen.
+  const perDay = impl.effectiveCapacity * 0.85;
+  return { acres: perDay * BASE_BREAKING_DAYS, perDay, implement: impl };
+}
+
 export function springDays(state, conditions) {
   return Math.max(6, BASE_SPRING_DAYS - (conditions.springDaysLost || 0));
 }

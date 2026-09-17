@@ -17,7 +17,8 @@ import {
   yieldPerAcre, neutralConditions, seasonCapacity, springDays, harvestDays,
   feedRequired, grazingCapacity, livingCost, annualWage, labourForce, netWorth,
   totalDebt, farmSummary, bestImplement, clamp, currentVariety, equipmentPrice,
-  creditLimit, croppableAcres, BASE_THRESHING_DAYS,
+  creditLimit, croppableAcres, breakableAcres,
+  BASE_THRESHING_DAYS, BASE_BREAKING_DAYS,
 } from './derive.js';
 import {
   ACRES_PER_QUARTER, playerQuarters, quarterById, workableAcres,
@@ -34,10 +35,6 @@ import { serviceDebt, assessSolvency, forcedLandSale, borrow, repay, creditSourc
 import { sellGrain, livestockIncome, applySpoilage, consumeFeed, storageCapacity, interpAnchors, defaultSaleOrders } from './market.js';
 import { advanceFamily, operator, fullName, age, isAlive, heirCandidates } from './family.js';
 import { runSuccession, needsSuccession, writeWill, RETIREMENT_AGE } from './succession.js';
-
-// Days available in the summer breaking window (June-July), separate from the
-// spring seeding window.
-export const BASE_BREAKING_DAYS = 42;
 
 export const HOMESTEAD_FEE = 10;
 export const PROVE_UP_YEARS = 3;
@@ -406,8 +403,10 @@ function phaseSpring(state, record, plan) {
   sp.springDays = days;
 
   const breakPlan = Object.entries(plan.breakAcres || {});
+  const breakCapacity = breakableAcres(state);
   let breakDaysUsed = 0;
   sp.broken = 0;
+  sp.breakableAcres = breakCapacity.acres;
   if (breakPlan.length) {
     const breaker = bestImplement(state, 'till');
     if (!breaker || !breaker.canBreakSod) {
@@ -419,10 +418,9 @@ function phaseSpring(state, record, plan) {
         const room = ACRES_PER_QUARTER - q.brokenAcres;
         let want = Math.min(acres, room);
         if (want <= 0) continue;
-        // Breaking native sod is slower than working broken ground, but not by
-        // much with a walking plow: contemporary accounts put it at about an
-        // acre a day behind oxen, and 20-30 acres in a summer was normal.
-        const rate = breaker.effectiveCapacity * 0.85;
+        // The same figure the UI offers the player — one derivation, so the
+        // acres they are told they can break are the acres they get.
+        const rate = breakCapacity.perDay;
         const daysLeft = BASE_BREAKING_DAYS - breakDaysUsed;
         const possible = Math.max(0, rate * daysLeft);
         const did = Math.min(want, possible);
