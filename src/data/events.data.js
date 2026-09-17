@@ -22,7 +22,7 @@ export const EVENTS = {
   // ---- DROUGHT ----------------------------------------------------------
   dryYear: {
     id: 'dryYear', name: 'Dry year', category: 'weather', tag: 'drought',
-    weight: 13, scope: 'all', severity: [0.12, 0.3],
+    weight: 10, scope: 'all', severity: [0.10, 0.24],
     narrative: 'The rains quit in June. The crop went short and thin and headed out too soon.',
   },
   drought: {
@@ -41,7 +41,7 @@ export const EVENTS = {
   // ---- FROST AND COLD ---------------------------------------------------
   earlyFrost: {
     id: 'earlyFrost', name: 'Early frost', category: 'weather', tag: 'frost',
-    weight: 9, scope: 'most', severity: [0.15, 0.45],
+    weight: 7, scope: 'most', severity: [0.13, 0.38],
     // A frost before the crop is ripe downgrades it rather than destroying it.
     gradeDowngrade: true,
     narrative: 'A hard frost in the third week of August, with the crop still in the milk. It graded tough and sold for feed.',
@@ -85,7 +85,7 @@ export const EVENTS = {
     id: 'hailstorm', name: 'Hailstorm', category: 'weather', tag: 'hail',
     // Hail is the classic prairie hazard: catastrophic and narrow. It takes a
     // field and leaves the one across the road untouched.
-    weight: 10, scope: 'some', severity: [0.4, 0.95],
+    weight: 7, scope: 'some', severity: [0.4, 0.95],
     narrative: 'Ten minutes of hail out of a green sky. One quarter is stubble and the rest never felt a stone.',
   },
   widespreadHail: {
@@ -167,14 +167,19 @@ export const EVENTS = {
   },
 
   // ---- GOOD YEARS -------------------------------------------------------
+  openSeason: {
+    id: 'openSeason', name: 'An open season', category: 'fortune', tag: 'bonus',
+    weight: 17, scope: 'all', severity: [0.04, 0.14], beneficial: true,
+    narrative: 'An early spring, a long fall, and nothing much to complain of in between.',
+  },
   goodYear: {
     id: 'goodYear', name: 'A good year', category: 'fortune', tag: 'bonus',
-    weight: 14, scope: 'all', severity: [0.08, 0.2], beneficial: true,
+    weight: 21, scope: 'all', severity: [0.12, 0.30], beneficial: true,
     narrative: 'Rain when it was wanted and heat when it was wanted. Some years everything simply goes right.',
   },
   bumperCrop: {
     id: 'bumperCrop', name: 'Bumper crop', category: 'fortune', tag: 'bonus',
-    weight: 4, scope: 'all', severity: [0.25, 0.45], beneficial: true,
+    weight: 7, scope: 'all', severity: [0.30, 0.55], beneficial: true,
     // A bumper crop you cannot get off in time is a lesson about capacity.
     strainsCapacity: true,
     narrative: 'The heaviest crop anyone could remember. The only question was whether you could get it all off.',

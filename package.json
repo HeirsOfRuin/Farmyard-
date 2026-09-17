@@ -1,0 +1,16 @@
+{
+  "name": "centennial-farm",
+  "version": "0.1.0",
+  "description": "A Manitoba farm, 1875-2000. Five generations, one quarter section to start.",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "test": "node --test test/",
+    "sim": "node sim/run.js",
+    "trace": "node sim/run.js --trace=2",
+    "tiers": "node sim/verify-tiers.js",
+    "build": "node tools/bundle.js",
+    "serve": "python3 -m http.server 8000"
+  },
+  "engines": { "node": ">=20" }
+}

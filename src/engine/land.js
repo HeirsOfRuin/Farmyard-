@@ -1,0 +1,203 @@
+// The township, its quarter sections, and everything that happens to ground.
+//
+// Layout follows the Dominion Land Survey, because the survey is not decoration
+// here — it decided what a settler could get and on what terms:
+//
+//   * A section is one mile square, 640 acres, divided into four quarters of
+//     160 acres each (NW, NE, SW, SE).
+//   * Sections are numbered 1-36 within a township, boustrophedon from the SE
+//     corner: 1-6 east to west along the south, 7-12 west to east above it,
+//     and so on.
+//   * EVEN-numbered sections were open for homestead — $10 filing fee, three
+//     years to prove up. ODD-numbered sections were largely CPR railway land
+//     grant and had to be bought. Sections 8 and 26 were Hudson's Bay Company.
+//     Sections 11 and 29 were school lands, held by the Crown and auctioned.
+//
+// That single rule is why prairie farms grew in a checkerboard, and why a
+// homesteader's second quarter cost money when their first did not.
+
+import { SOILS, soil as soilDef } from '../data/regions.data.js';
+
+export const ACRES_PER_QUARTER = 160;
+export const QUARTER_CODES = ['NW', 'NE', 'SW', 'SE'];
+
+// The visible map: four sections across, two down, north at the top. Section
+// numbers are taken from a real township's rows 3 and 4, so the odd/even
+// checkerboard falls the way it actually did on the ground.
+export const MAP_SECTIONS = [
+  [19, 20, 21, 22], // north row (row 4 of the township, running west to east)
+  [18, 17, 16, 15], // south row (row 3, running east to west)
+];
+
+export const MAP_COLS = MAP_SECTIONS[0].length * 2; // 8 quarters across
+export const MAP_ROWS = MAP_SECTIONS.length * 2; //    4 quarters down
+
+/** Who a section was open to under the Dominion Lands Act. */
+export function sectionTenure(sectionNo) {
+  if (sectionNo === 8 || sectionNo === 26) return 'hbc';
+  if (sectionNo === 11 || sectionNo === 29) return 'school';
+  return sectionNo % 2 === 0 ? 'homestead' : 'railway';
+}
+
+export const TENURE_LABEL = {
+  homestead: 'Open for homestead',
+  railway: 'CPR land grant',
+  hbc: "Hudson's Bay Company",
+  school: 'School lands',
+};
+
+/** Legal land description, e.g. "NE 20-6-2E". */
+export function legalDescription(q, townshipLabel) {
+  const m = /Twp\.\s*(\d+),\s*Rge\.\s*(\d+)\s*([EW])/.exec(townshipLabel || '');
+  const twp = m ? m[1] : '6';
+  const rge = m ? m[2] : '2';
+  const dir = m ? m[3] : 'E';
+  return `${q.quarter} ${q.section}-${twp}-${rge}${dir}`;
+}
+
+/**
+ * Build the township. Soil is drawn from the region's weights but smoothed
+ * against neighbours, because soil types occur in patches on real ground, not
+ * as independent draws per quarter — an unsmoothed map looks like confetti and
+ * makes buying decisions meaningless.
+ */
+export function generateTownship(rng, regionDef) {
+  const quarters = [];
+  const weights = Object.entries(regionDef.soilWeights).map(([id, weight]) => ({ id, weight }));
+
+  for (let sRow = 0; sRow < MAP_SECTIONS.length; sRow++) {
+    for (let sCol = 0; sCol < MAP_SECTIONS[sRow].length; sCol++) {
+      const section = MAP_SECTIONS[sRow][sCol];
+      const tenure = sectionTenure(section);
+      for (let qi = 0; qi < QUARTER_CODES.length; qi++) {
+        const code = QUARTER_CODES[qi];
+        const row = sRow * 2 + (code[0] === 'N' ? 0 : 1);
+        const col = sCol * 2 + (code[1] === 'W' ? 0 : 1);
+        quarters.push({
+          id: `${code}${section}`,
+          section,
+          quarter: code,
+          row,
+          col,
+          tenure,
+          soil: rng.weighted(weights).id,
+          owner: null, // null = unclaimed
+          ownerName: null,
+          brokenAcres: 0,
+          use: 'idle',
+          lastUse: null,
+          // Initialised here, not left undefined. An unset numeric field that
+          // reaches arithmetic produces NaN, and NaN in `fertility` poisons
+          // every future yield on that quarter silently and permanently.
+          seededAcres: 0,
+          cropHistory: [],
+          fertility: 0.9, // virgin prairie is rich and will not stay that way
+          moisture: 0.55,
+          drained: false,
+          stonePicked: false,
+          fenced: false,
+          yearAcquired: null,
+          acquiredBy: null,
+        });
+      }
+    }
+  }
+
+  // Two smoothing passes: each quarter may adopt a neighbour's soil. This turns
+  // independent draws into patches without needing a noise function.
+  for (let pass = 0; pass < 2; pass++) {
+    for (const q of quarters) {
+      const neighbours = quarters.filter(
+        (o) => Math.abs(o.row - q.row) + Math.abs(o.col - q.col) === 1
+      );
+      if (neighbours.length && rng.chance(0.45)) {
+        q.soil = rng.pick(neighbours).soil;
+      }
+    }
+  }
+
+  return quarters;
+}
+
+/** Populate unclaimed quarters with neighbours who can later sell out to you. */
+export function seedNeighbours(rng, quarters, surnames, homeQuarterId) {
+  const families = rng.shuffle([...surnames]).slice(0, 9);
+  for (const q of quarters) {
+    if (q.id === homeQuarterId) continue;
+    if (q.tenure === 'railway' || q.tenure === 'hbc' || q.tenure === 'school') {
+      // Held by the company or the Crown until somebody buys it.
+      q.owner = q.tenure;
+      q.ownerName = TENURE_LABEL[q.tenure];
+      continue;
+    }
+    // Homestead-eligible ground fills up over the first decades; some starts
+    // empty so there is still free land to file on.
+    if (rng.chance(0.62)) {
+      const name = rng.pick(families);
+      q.owner = 'neighbour';
+      q.ownerName = name;
+      q.brokenAcres = rng.range(8, 35);
+      q.use = 'wheat';
+    }
+  }
+  return quarters;
+}
+
+export function quarterById(quarters, id) {
+  return quarters.find((q) => q.id === id) || null;
+}
+
+export function playerQuarters(quarters) {
+  return quarters.filter((q) => q.owner === 'player');
+}
+
+export function ownedAcres(quarters) {
+  return playerQuarters(quarters).length * ACRES_PER_QUARTER;
+}
+
+export function brokenAcres(quarters) {
+  return playerQuarters(quarters).reduce((sum, q) => sum + q.brokenAcres, 0);
+}
+
+/** Acres under a crop that actually produces something sellable or feedable. */
+export function croppedAcres(quarters) {
+  return playerQuarters(quarters)
+    .filter((q) => q.use !== 'idle' && q.use !== 'fallow' && q.use !== 'bush')
+    .reduce((sum, q) => sum + q.brokenAcres, 0);
+}
+
+/**
+ * Per-acre value of a quarter relative to the district average, from its soil,
+ * how much of it is broken, and its improvements. Used for both purchase price
+ * and what an estate appraises it at — one function, so a quarter cannot be
+ * worth one number when you buy it and another when your heirs divide it.
+ */
+export function quarterValueFactor(q) {
+  const s = soilDef(q.soil);
+  let f = s.yieldFactor;
+  // Broken land is worth far more than raw prairie: the breaking is the work.
+  const brokenShare = q.brokenAcres / ACRES_PER_QUARTER;
+  f *= 0.55 + 0.45 * brokenShare + 0.25 * brokenShare;
+  if (q.drained) f *= 1.3;
+  if (q.stonePicked) f *= 1.12;
+  if (q.fenced) f *= 1.05;
+  if (s.requiresDrainage && !q.drained) f *= 0.6;
+  return f;
+}
+
+/** Acres of a quarter that can be worked at all, given soil and improvements. */
+export function workableAcres(q) {
+  const s = soilDef(q.soil);
+  if (s.requiresDrainage && !q.drained) return Math.min(q.brokenAcres, ACRES_PER_QUARTER * 0.35);
+  return q.brokenAcres;
+}
+
+/** What it costs to break one acre of native sod on this quarter, in 1875 dollars. */
+export function breakingCostPerAcre(q) {
+  const s = soilDef(q.soil);
+  let cost = 3.2 * s.breakingCost;
+  if (s.stoniness > 0.5) cost *= 1 + s.stoniness * 0.5; // stones must come out first
+  return cost;
+}
+
+export { SOILS };
