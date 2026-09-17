@@ -164,6 +164,9 @@ const ABLATIONS = [
   { id: 'noExpand', label: 'never buys land' },
   { id: 'noWill', label: 'never writes a will' },
   { id: 'noDiversify', label: 'grows only wheat' },
+  { id: 'noPrograms', label: 'takes no government programs' },
+  { id: 'noRoads', label: 'never improves a road' },
+  { id: 'ignoreDistance', label: 'buys land on price alone' },
 ];
 
 export function runAblations({ runs = 200, difficulty = 'settler', background = 'ontario' } = {}) {

@@ -221,6 +221,11 @@ test('the planning figure and the resolving figure are the same number', () => {
         (plan.buyEquipment || []).length > 0 ||
         (plan.sellEquipment || []).length > 0 ||
         (plan.hiredHands ?? 0) !== (state.hiredHands ?? 0) ||
+        // Road work changes how long it takes to reach a field, and therefore
+        // how many days are left to work it.
+        (plan.roadWorks || []).length > 0 ||
+        (plan.buyLand || []).length > 0 ||
+        plan.fileHomestead ||
         changedFieldUse;
       const before = croppableAcres(state);
       const { record } = runYear(state, plan);

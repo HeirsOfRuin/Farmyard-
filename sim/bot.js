@@ -15,7 +15,7 @@ import {
   farmSummary, bestImplement, seasonCapacity, labourForce, creditLimit,
   feedRequired, totalDebt, netWorth, equipmentPrice, draftPower, croppableAcres,
   livingCost, debtService, carryingCapacity, livestockUnits, breakableAcres,
-  techEffect, BASE_SPRING_DAYS, BASE_HARVEST_DAYS,
+  techEffect, timelinessFactor, BASE_SPRING_DAYS, BASE_HARVEST_DAYS,
 } from '../src/engine/derive.js';
 import { playerQuarters, ACRES_PER_QUARTER, quarterById } from '../src/engine/land.js';
 import { cropsAvailable, CROPS, WHEAT_VARIETIES } from '../src/data/crops.data.js';
@@ -26,6 +26,8 @@ import { LIVESTOCK, LIVESTOCK_PRICING } from '../src/data/livestock.data.js';
 import { creditSourcesAvailable } from '../src/engine/finance.js';
 import { operator, age, heirCandidates } from '../src/engine/family.js';
 import { quarterPurchasePrice } from '../src/engine/turn.js';
+import { distanceFromYard } from '../src/engine/land.js';
+import { offeredPrograms } from '../src/engine/programs.js';
 import { interpAnchors } from '../src/engine/market.js';
 
 /** How the bot answers each of the game's scripted decisions. Fixed, so runs compare. */
@@ -191,10 +193,24 @@ export function makePlan(state, opts = {}) {
     const forSale = state.quarters
       .filter((q) => q.owner !== 'player' && q.owner !== null &&
         (q.forSale || q.owner === 'railway' || q.owner === 'school'))
-      .map((q) => ({ q, price: quarterPurchasePrice(state, q) }))
-      .filter((x) => x.price < (cash - reserve) * 0.8)
-      .sort((a, b) => a.price - b.price);
-    if (forSale.length) plan.buyLand = [forSale[0].q.id];
+      .map((q) => ({
+        q,
+        price: quarterPurchasePrice(state, q),
+        miles: distanceFromYard(state, q),
+        // What an acre of THIS quarter would actually yield, distance and all.
+        timeliness: timelinessFactor(state, q),
+      }))
+      .filter((x) => x.price < (cash - reserve) * 0.8);
+
+    if (forSale.length) {
+      // Cheapest per USABLE acre, not cheapest outright. A quarter three miles
+      // out behind a team grows a fifth less than the one across the road, and
+      // buying on sticker price alone is how a farm ends up scattered across a
+      // township it cannot work.
+      if (opts.ignoreDistance) forSale.sort((a, b) => a.price - b.price);
+      else forSale.sort((a, b) => (a.price / a.timeliness) - (b.price / b.timeliness));
+      plan.buyLand = [forSale[0].q.id];
+    }
   }
 
   // An operator who believes land only goes up borrows to buy it. This is not
@@ -266,7 +282,39 @@ export function makePlan(state, opts = {}) {
   const acresPerHand = sum.acresCropped / Math.max(0.5, labour.units);
   plan.hiredHands = acresPerHand > 90 && cash > reserve * 2 ? 1 : 0;
 
-  // --- 10. a will -----------------------------------------------------------
+  // --- 10. government programs ----------------------------------------------
+  // Free or cost-shared money with no strings is simply taken. Debt review is
+  // not: it writes a third of the debt off and costs six years of credit, so
+  // the bot only reaches for it when the farm is genuinely going under.
+  if (!opts.noPrograms) {
+    const offers = offeredPrograms(state, { yieldRatio: state.yearYieldRatio ?? 1 });
+    for (const { program: p, ok } of offers) {
+      if (!ok) continue;
+      if (p.id === 'debtReview') {
+        const desperate = (state.distressYears || 0) >= 2 && totalDebt(state) > netWorth(state) * 0.5;
+        if (!desperate) continue;
+      }
+      if (p.id === 'pfra' && cash < reserve * 1.5) continue;
+      if (p.id === 'safetyNet' && cash < reserve) continue;
+      plan.takeUpPrograms = [...(plan.takeUpPrograms || []), p.id];
+      break; // one a year is plenty of paperwork
+    }
+  }
+
+  // --- 11. an approach to the worst field ------------------------------------
+  // Cheap, local, and it is the difference between a quarter you can get a
+  // machine into and one you cannot.
+  if (!opts.noRoads && cash > reserve * 1.6) {
+    const worst = playerQuarters(state.quarters)
+      .filter((q) => q.brokenAcres > 1 && (q.roadImprovement || 0) < 1)
+      .map((q) => ({ q, loss: 1 - timelinessFactor(state, q) }))
+      .sort((a, b) => b.loss - a.loss)[0];
+    if (worst && worst.loss > 0.08) {
+      plan.roadWorks = [{ quarterId: worst.q.id, kind: year >= 1920 ? 'gravelPetition' : 'approach' }];
+    }
+  }
+
+  // --- 12. a will -----------------------------------------------------------
   // The bot always writes one. A human player usually will not, and the
   // difference between those two behaviours is worth measuring.
   const op = operator(state);
@@ -444,9 +492,27 @@ function chooseRotation(state, owned, opts = {}) {
   let oatLeft = horses ? oatAcres : 0;
   let i = 0;
 
-  for (const q of owned) {
+  // Work the near ground hardest. The cash crop wants timely seeding and a
+  // timely harvest and loses most by not getting them; hay and pasture do not
+  // care how far away they are, so they go on the back quarters. This is the
+  // ordinary logic of a farm with distance in it, and without it the bot
+  // cannot show whether distance matters.
+  const byDistance = [...owned].sort(
+    (a, b) => distanceFromYard(state, a) - distanceFromYard(state, b)
+  );
+
+  for (const q of byDistance) {
     if (q.brokenAcres < 1) { use[q.id] = 'idle'; continue; }
     let pick;
+
+    // Far ground that loses a lot to distance goes to grass rather than grain.
+    const lostToDistance = opts.ignoreDistance ? 0 : 1 - timelinessFactor(state, q);
+    if (lostToDistance > 0.18 && hayLeft > 0) {
+      use[q.id] = 'pasture';
+      hayLeft -= q.brokenAcres * 0.5;
+      i++;
+      continue;
+    }
 
     // Feed first, in whole fields, smallest commitment that covers it.
     if (hayLeft >= q.brokenAcres * 0.5) { pick = 'hay'; hayLeft -= q.brokenAcres; }

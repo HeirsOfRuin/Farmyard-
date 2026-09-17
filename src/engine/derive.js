@@ -469,9 +469,12 @@ export function timelinessFactor(state, q) {
   const road = roadFor(state, q);
   const effectiveMph = Math.max(0.4, travelSpeed(state) * road.speedFactor);
   const hoursOneWay = miles / effectiveMph;
-  // A tenth of the crop for every hour the outfit spends getting there, to a
-  // floor — even the furthest corner of a township still grows something.
-  const penalty = Math.min(0.35, hoursOneWay * 0.10);
+  // Loss per hour of travel, to a floor — even the furthest corner of a
+  // township still grows something. Calibrated so a field three miles out
+  // behind a team loses about a fifth of its crop and the same field behind a
+  // diesel tractor loses nothing: enough to decide where the money crop goes,
+  // not so much that distant land is worthless.
+  const penalty = Math.min(0.32, hoursOneWay * 0.075);
   return 1 - penalty;
 }
 
