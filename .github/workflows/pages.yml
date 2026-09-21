@@ -1,0 +1,86 @@
+# Publish the installable build to GitHub Pages.
+#
+# This workflow also TURNS PAGES ON: `actions/configure-pages` with
+# `enablement: true` enables it on a repository that has never had it, which is
+# the only route to it from here — there is no Pages API in this toolset.
+#
+# What gets published is `docs/`, which `tools/bundle.js` writes: the game, a
+# real web app manifest, the icons and a service worker. That combination is
+# what lets a phone actually install it — a browser only offers to install a
+# page it loaded itself over https with a manifest and a worker at the same
+# origin, so the single-file copy and the embedded copy cannot qualify however
+# many meta tags they carry.
+#
+# The build is regenerated here rather than trusted from the commit, so a
+# stale docs/ cannot be published by accident.
+
+name: Pages
+
+on:
+  push:
+    branches: [claude/centennial-farm-game-21a0nw]
+    paths:
+      - 'src/**'
+      - 'index.html'
+      - 'assets/**'
+      - 'tools/bundle.js'
+      - '.github/workflows/pages.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# One deploy at a time, and let a run in progress finish rather than cancelling
+# it: a half-finished Pages deploy is worse than a slightly stale one.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      # The tests are the reason to trust the thing being published.
+      - name: Test
+        run: node --test "test/*.test.js"
+
+      - name: Build
+        run: node tools/bundle.js
+
+      # A publish that quietly ships a page with no manifest is the exact
+      # failure this whole build exists to avoid, so check before uploading.
+      - name: Check the installable build is complete
+        run: |
+          set -e
+          for f in docs/index.html docs/manifest.webmanifest docs/sw.js docs/icon-180.png docs/icon-512.png; do
+            test -s "$f" || { echo "missing or empty: $f"; exit 1; }
+          done
+          grep -q 'rel="manifest" href="./manifest.webmanifest"' docs/index.html
+          grep -q 'serviceWorker' docs/index.html
+          echo "docs/ is complete"
+
+      - uses: actions/configure-pages@v5
+        with:
+          enablement: true
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: docs
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4
