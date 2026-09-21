@@ -77,7 +77,13 @@ export const TUTORIAL_STEPS = [
       all run, the weather happens whether you like it or not, and the books settle.
       Afterwards open <strong>The books</strong> — every dollar in and out is listed
       there, and it is the honest record of whether this farm is working.`,
-    done: (s) => s.year > s.startYear,
+    // Ticks on SOD ACTUALLY BROKEN, not on a year having passed. Written as
+    // "a year has passed" it was satisfied by working a year with nothing
+    // planned — so a player who pressed the button without setting any acres
+    // never got the one instruction the whole farm depends on, and the step
+    // that would have told them vanished.
+    done: (s) => playerQuarters(s.quarters).some((q) => q.brokenAcres > 0),
+    expires: 6,
   },
   {
     id: 'capacity',
