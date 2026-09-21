@@ -23,6 +23,13 @@ import { STATUS } from './state.js';
 
 export const RETIREMENT_AGE = 65;
 
+/** What the farm grossed most recently, for sizing what it can carry. */
+function recentGrossIncome(state) {
+  const recent = (state.ledger || []).slice(-3).map((r) => r.income?.total || 0).filter((v) => v > 0);
+  if (!recent.length) return 0;
+  return recent.reduce((a, b) => a + b, 0) / recent.length;
+}
+
 /** What a will costs to draw up — trivial money, and almost nobody does it. */
 export function willCost(state) {
   return Math.round(inflate(12, state.year));
@@ -147,20 +154,73 @@ export function settleEstate(state, rng, { heirId, deceased, division }) {
   let remaining = owed - fromCash;
   if (fromCash > 0) log.push(`$${Math.round(fromCash).toLocaleString()} paid out of the account.`);
 
-  // 3. Siblings who will take instalments become a debt against the farm.
+  // 3. Siblings who will take instalments become a note against the farm —
+  //    but only as large a note as the farm can actually carry.
+  //
+  //    This used to take the whole claim as a ten-year note regardless of size.
+  //    On a well-equipped farm the estate is large, so the claim is large, and
+  //    the note came out at thirteen times the farm's annual gross. Nothing
+  //    could service that, and it read as machinery being fatal: traced on seed
+  //    17, a farm worth $47,000 in 1914 took a $19,191 estate note in 1915 and
+  //    was gone by 1920, while the same family that never mechanised had a
+  //    small estate, a small claim, and farmed on to 1978.
+  //
+  //    What actually happened when a farm could not pay out its siblings is
+  //    that the siblings took LAND. The farm got smaller and carried on, which
+  //    is why so many prairie farms shrank at a generation and why the ones
+  //    that stayed whole are remarked on.
   if (remaining > 0 && diff.siblingsAcceptInstalments) {
-    state.debts.push({
-      id: `estate${state.year}`,
-      source: 'estate',
-      sourceName: 'Estate settlement',
-      principal: remaining,
-      original: remaining,
-      rate: 0.06,
-      termYears: 10,
-      yearTaken: state.year,
-    });
-    log.push(`The rest is carried as a note to the family, at six per cent over ten years. It is a mortgage in all but name.`);
-    return { ok: true, owed, landSold: [], log, intact: true, viaNote: true };
+    const gross = recentGrossIncome(state);
+    const serviceable = Math.max(inflate(150, state.year), gross * 4);
+    const asNote = Math.min(remaining, serviceable);
+    const asLand = remaining - asNote;
+
+    if (asNote > 1) {
+      state.debts.push({
+        id: `estate${state.year}`,
+        source: 'estate',
+        sourceName: 'Estate settlement',
+        principal: asNote,
+        original: asNote,
+        rate: 0.05,
+        // A family arrangement, not a bank's. Twenty years is what these
+        // actually ran to when everyone wanted the farm to survive.
+        termYears: 20,
+        yearTaken: state.year,
+      });
+      log.push(
+        `$${Math.round(asNote).toLocaleString()} is carried as a note to the family, ` +
+          'at five per cent over twenty years. It is a mortgage in all but name.'
+      );
+    }
+
+    const landSold = [];
+    if (asLand > 1) {
+      // The rest is taken in land, because there is no money for it.
+      const base = landPrice(state.year) * (state.regionDef.landValueFactor ?? 1);
+      const candidates = playerQuarters(state.quarters)
+        .filter((q) => q.id !== state.homeQuarterId)
+        .sort((a, b) => quarterValueFactor(a) - quarterValueFactor(b));
+      let owing = asLand;
+      for (const q of candidates) {
+        if (owing <= 0) break;
+        const value = base * quarterValueFactor(q) * ACRES_PER_QUARTER;
+        q.owner = 'neighbour';
+        q.ownerName = 'taken in the estate';
+        q.use = 'wheat';
+        owing -= value;
+        landSold.push({ id: q.id, value });
+      }
+      if (landSold.length) {
+        log.push(
+          `The farm cannot raise the rest, so ${landSold.length} quarter` +
+            `${landSold.length > 1 ? 's go' : ' goes'} to the family instead. ` +
+            'The place is smaller than it was, and it is still the place.'
+        );
+      }
+    }
+
+    return { ok: true, owed, landSold, log, intact: landSold.length === 0, viaNote: true };
   }
 
   // 4. Nothing left but to sell land. This is the farm being taken apart.

@@ -181,26 +181,29 @@ export function runAblations({ runs = 200, difficulty = 'settler', background = 
   lines.push('metric moving is not evidence a subsystem helped.');
   lines.push('');
   lines.push('variant'.padEnd(30) + 'centennial'.padStart(12) + 'delta'.padStart(9) +
-    'acres 2000'.padStart(12) + 'delta'.padStart(9));
-  lines.push('-'.repeat(72));
+    'mean worth'.padStart(13) + 'mean bushels'.padStart(14));
+  lines.push('-'.repeat(78));
   lines.push('baseline'.padEnd(30) + fmtPct(base.centennialRate).padStart(12) + ''.padStart(9) +
-    fmtNum(base.medianAcres2000, 10).padStart(12) + ''.padStart(9));
+    fmtNum(base.meanNetWorth, 11).padStart(13) + fmtNum(base.meanBushels, 12).padStart(14));
 
   for (const ab of ABLATIONS) {
     const r = playBatch({ runs, difficulty, background, seed0: 1, botOpts: { [ab.id]: true } });
     const dCent = (r.centennialRate - base.centennialRate) * 100;
-    const dAcres = (r.medianAcres2000 ?? 0) - (base.medianAcres2000 ?? 0);
     const mark = Math.abs(dCent) < noise ? ' ~' : '';
     lines.push(
       ab.label.padEnd(30) +
       fmtPct(r.centennialRate).padStart(12) +
       `${dCent >= 0 ? '+' : ''}${dCent.toFixed(1)}${mark}`.padStart(9) +
-      fmtNum(r.medianAcres2000, 10).padStart(12) +
-      `${dAcres >= 0 ? '+' : ''}${Math.round(dAcres)}`.padStart(9)
+      fmtNum(r.meanNetWorth, 11).padStart(13) +
+      fmtNum(r.meanBushels, 12).padStart(14)
     );
   }
   lines.push('');
   lines.push('~ marks a change inside the noise floor: not a result.');
+  lines.push('');
+  lines.push('Read the three columns together. A variant can raise the odds of holding');
+  lines.push('the land and still be the wrong choice: never buying a machine is the');
+  lines.push('clearest case, and reading the survival column alone calls it a bug.');
   console.log(lines.join('\n'));
   return lines.join('\n');
 }

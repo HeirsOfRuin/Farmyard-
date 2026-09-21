@@ -963,8 +963,10 @@ function phaseMarket(state, record, plan) {
     // SUMMER work — railway grading gangs, the harvest excursions — was only
     // open to labour the farm's own acres did not need, and it is what
     // financed a homestead through the years before it could feed itself.
+    // Winter work stayed available, but got steadily harder to come by as the
+    // lumber camps mechanised and cordwood stopped being worth cutting.
     const eraAccess = state.year < 1900 ? 1.0 : state.year < 1930 ? 0.9
-      : state.year < 1950 ? 0.7 : state.year < 1970 ? 0.5 : 0.4;
+      : state.year < 1950 ? 0.7 : state.year < 1970 ? 0.4 : 0.25;
 
     const adults = state.family.members.filter((m) => {
       if (m.deathYear || m.away) return false;
@@ -985,7 +987,23 @@ function phaseMarket(state, record, plan) {
     // Summer: only genuinely spare hands, and worth more per head.
     const needed = sum.acresCropped / 55;
     const spare = Math.max(0, labour.family - needed);
-    const summer = Math.min(spare, 2) * wage * 0.35 * eraAccess * access;
+    // SUMMER casual work ended.
+    //
+    // The harvest excursions, the railway grading gangs and the threshing
+    // crews that a settler's spare hands went out on were finished by the
+    // middle of the century — mechanised away, most of them by the same
+    // machines this game sells you. After that, working off the farm meant a
+    // job in town, which is a different life and not a season's wages.
+    //
+    // This matters more than it sounds. Summer wages were paid on SPARE labour,
+    // and a farm has most spare labour when it farms least — so the game was
+    // quietly paying a family to stay small, and an ablation showed a farm that
+    // never bought a machine was ten points MORE likely to keep the land. That
+    // is the exact opposite of the century this is about.
+    const summerAvailable = state.year < 1935 ? 1
+      : state.year < 1950 ? Math.max(0, (1950 - state.year) / 15)
+      : 0;
+    const summer = Math.min(spare, 2) * wage * 0.35 * eraAccess * access * summerAvailable;
 
     const amount = winter + summer;
     if (amount > 1) {
@@ -1155,11 +1173,28 @@ function phaseSettle(state, record, plan) {
     if (state.cash < 0) {
       const sources = creditSourcesAvailable(state);
       const src = sources.find((x) => x.id === 'operating') || sources.find((x) => x.maxTerm <= 3) || sources[0];
-      // Cap the rescue. Lending a farm its way out of every shortfall lets
-      // capitalised interest compound into a debt no crop could service, which
-      // is a spiral rather than a farm.
+      // Cap the rescue by what the farm can SERVICE, not by what it is worth.
+      //
+      // This was capped at a quarter of net worth, and net worth is mostly
+      // land. A farm holding five quarters could therefore borrow thousands to
+      // cover one bad autumn, and then meet interest it had no crop to pay.
+      // Traced on seed 17: debt went from nothing in 1912 to $20,149 by 1916
+      // and the farm was gone in 1920, while the same family that never bought
+      // a machine — and so never had the capacity to justify the land, nor the
+      // net worth to borrow against — was still farming in 1978.
+      //
+      // That is the whole machinery inversion. It was never the cost of
+      // machines; it was that owning them made the farm creditworthy enough to
+      // destroy itself.
       const room = creditLimit(state);
-      const ceiling = Math.max(0, netWorth(state) * 0.25);
+      const gross = sumValues(record.income);
+      const recentGross = state.ledger.length
+        ? state.ledger[state.ledger.length - 1].income?.total || 0
+        : 0;
+      const earning = Math.max(gross, recentGross);
+      // Half a year's gross is a hard year carried. More than that is a debt
+      // the crop cannot retire, whatever the land is worth.
+      const ceiling = Math.max(inflate(40, state.year), earning * 0.5);
       const want = Math.min(-state.cash * 1.15, room, ceiling);
       if (src && want > 1) {
         const r = borrow(state, { amount: want, sourceId: src.id, termYears: src.maxTerm });

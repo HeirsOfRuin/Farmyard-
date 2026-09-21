@@ -189,6 +189,11 @@ export function aggregate(results) {
     earlyEndRate: results.filter((r) => r.yearsPlayed < 5).length / n,
     stillbornRate: results.filter((r) => r.yearsPlayed < 3).length / n,
     medianNetWorth: median(pick((r) => r.finalNetWorth)),
+    // A second axis the survival rate ignores. A strategy can lower the odds of
+    // holding the land and still be the right one — that is a trade, not a bug,
+    // and reporting only the survival rate hides which it is.
+    meanNetWorth: results.reduce((s, r) => s + (r.finalNetWorth || 0), 0) / n,
+    meanBushels: results.reduce((s, r) => s + (r.totalBushels || 0), 0) / n,
     medianHarvests: median(pick((r) => r.harvestsTaken)),
     medianBushels: median(pick((r) => r.totalBushels)),
     totalAcresLostToCapacity: pick((r) => r.acresLostToCapacity).reduce((a, b) => a + b, 0),
