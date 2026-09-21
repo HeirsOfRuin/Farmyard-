@@ -16,7 +16,8 @@ import { STATUS, ownedQuarters } from './state.js';
 import {
   yieldPerAcre, neutralConditions, seasonCapacity, springDays, harvestDays,
   feedRequired, grazingCapacity, livingCost, annualWage, labourForce, netWorth,
-  totalDebt, farmSummary, bestImplement, clamp, currentVariety, equipmentPrice,
+  totalDebt, farmSummary, bestImplement, bestBreaker, clamp, currentVariety, equipmentPrice,
+  propertyTax, conditionFactor,
   creditLimit, croppableAcres, breakableAcres, weedControlLevel,
   carryingCapacity, livestockUnits, speciesCap, draftPower, techEffect,
   BASE_THRESHING_DAYS, BASE_BREAKING_DAYS,
@@ -24,6 +25,7 @@ import {
 import {
   ACRES_PER_QUARTER, playerQuarters, quarterById, workableAcres,
   breakingCostPerAcre, quarterValueFactor, roadFor, distanceFromYard,
+  settledBrokenAcres, maxBrokenAcres,
 } from './land.js';
 import { crop as cropDef, CROPS, cropsAvailable, WHEAT_VARIETIES } from '../data/crops.data.js';
 import { equipment as equipDef, EQUIPMENT } from '../data/equipment.data.js';
@@ -33,7 +35,7 @@ import { historyFor } from '../data/history.data.js';
 import { landPrice, rawLandDiscount, inflate, priceIndex, cropPrice, LAST_YEAR } from '../data/prices.data.js';
 import { ROAD_WORKS, STATUTE_LABOUR } from '../data/roads.data.js';
 import {
-  runAutomaticPrograms, runEnrolledPrograms, takeUpProgram, quarterTaxFactor,
+  runAutomaticPrograms, runEnrolledPrograms, takeUpProgram, quarterTaxFactor, incomeTax,
   taxReliefLabel, upkeepReliefFactor, PROGRAMS,
 } from './programs.js';
 import { rollYearEvents, describeEvents } from './events.js';
@@ -279,9 +281,20 @@ function applyHistoryEffects(state, record, fx) {
 }
 
 function mergeModifiers(mods, fx) {
-  for (const key of ['priceMult', 'landMult', 'interestMult', 'creditEase', 'freightMult', 'yieldMult', 'hogPriceMult', 'gradingPenalty', 'haulMiles', 'labourShortage', 'illnessRisk']) {
+  // A standing change in how likely a whole CLASS of hazard is. The thirties
+  // were not a run of bad luck, they were a drought cycle, and a model that
+  // can only force one named event per year cannot say so: with the dust bowl
+  // written as a single forced drought in 1937, this farm took 20 to 23 bushels
+  // an acre straight through 1930 to 1936 and cleared a 26% margin doing it.
+  if (fx.hazardTagMult) {
+    mods.hazardTagMult = { ...(mods.hazardTagMult || {}) };
+    for (const [tag, mult] of Object.entries(fx.hazardTagMult)) {
+      mods.hazardTagMult[tag] = (mods.hazardTagMult[tag] ?? 1) * mult;
+    }
+  }
+  for (const key of ['priceMult', 'landMult', 'interestMult', 'creditEase', 'freightMult', 'yieldMult', 'hogPriceMult', 'gradingPenalty', 'haulMiles', 'labourShortage', 'illnessRisk', 'moistureShift', 'beneficialMult']) {
     if (fx[key] == null) continue;
-    if (key === 'gradingPenalty' || key === 'labourShortage' || key === 'illnessRisk') {
+    if (key === 'gradingPenalty' || key === 'labourShortage' || key === 'illnessRisk' || key === 'moistureShift') {
       mods[key] = (mods[key] || 0) + fx[key];
     } else {
       mods[key] = (mods[key] ?? 1) * fx[key];
@@ -541,14 +554,14 @@ function phaseSpring(state, record, plan) {
   sp.broken = 0;
   sp.breakableAcres = breakCapacity.acres;
   if (breakPlan.length) {
-    const breaker = bestImplement(state, 'till');
-    if (!breaker || !breaker.canBreakSod) {
+    const breaker = bestBreaker(state);
+    if (!breaker) {
       record.notes.push('Nothing on the place will turn native sod. No new land was broken.');
     } else {
       for (const [qid, acres] of breakPlan) {
         const q = quarterById(state.quarters, qid);
         if (!q || q.owner !== 'player') continue;
-        const room = ACRES_PER_QUARTER - q.brokenAcres;
+        const room = maxBrokenAcres(q) - q.brokenAcres;
         let want = Math.min(acres, room);
         if (want <= 0) continue;
         // The same figure the UI offers the player — one derivation, so the
@@ -704,7 +717,17 @@ function phaseSeason(state, record, plan) {
   const rng = streamFor(state.seed, state.year, 'season');
 
   // Set each quarter's moisture for the year before anything reads it.
-  const baseMoisture = clamp(rng.normal(0.62, 0.13), 0.15, 1.0);
+  //
+  // MOISTURE CARRIES OVER. Drawn fresh and independent every year, as it was,
+  // a drought cycle could not exist: the thirties came out as a run of
+  // unrelated dry draws averaging back to normal, and the farm took twenty
+  // bushels an acre straight through the dust bowl. Prairie soil does not work
+  // that way. A dry autumn leaves an empty profile and next spring starts
+  // behind, which is why droughts out here came in multi-year runs and why
+  // 1937 followed 1936 instead of cancelling it.
+  const carry = state.moistureCarry ?? 0;
+  const eraShift = state.modifiers?.moistureShift ?? 0;
+  const baseMoisture = clamp(rng.normal(0.62, 0.13) + carry + eraShift, 0.15, 1.0);
   for (const q of playerQuarters(state.quarters)) {
     let m = baseMoisture;
     // Last year's summerfallow banked moisture for this crop — the entire
@@ -724,6 +747,13 @@ function phaseSeason(state, record, plan) {
   state.yearHazards = {
     illnessRisk: state.modifiers?.illnessRisk || 0,
   };
+
+  // What this season leaves in the ground for the next one. A drought that
+  // drained the profile does not end when the calendar turns.
+  {
+    const realised = baseMoisture + (conditions.moistureShift || 0);
+    state.moistureCarry = clamp((realised - 0.62) * 0.5, -0.26, 0.2);
+  }
 
   record.season.events = describeEvents(fired);
   record.season.conditions = {
@@ -841,7 +871,10 @@ function phaseHarvest(state, record, plan) {
       unit: c.unit,
       missedAcres: missed,
     });
-    s.q.cropHistory = [...(s.q.cropHistory || []), s.q.use].slice(-6);
+    // `yearsCropped` counts crops taken, which is what the virgin-prairie bonus
+    // eases off against. The crop HISTORY is written once a year for every
+    // quarter, in the agronomy block below — including the ones that grew
+    // nothing, because a fallow year is the whole point of a rotation.
     s.q.yearsCropped = (s.q.yearsCropped ?? 0) + 1;
   }
 
@@ -1065,7 +1098,16 @@ function phaseSettle(state, record, plan) {
   let upkeep = 0;
   for (const item of state.equipment) {
     const e = equipDef(item.type);
-    upkeep += inflate((e.upkeep || 0) / (priceIndex(e.priceYear || 1875) / 100), state.year) * (item.count || 1);
+    const base = inflate((e.upkeep || 0) / (priceIndex(e.priceYear || 1875) / 100), state.year);
+    // WORN IRON COSTS MORE TO KEEP RUNNING, and that is the whole argument for
+    // trading. Charged flat, a 1970 combine ran to 2000 at the same bill it
+    // cost new, machinery came to two and a half per cent of gross across the
+    // century, and the farm banked the difference. A machine held down at the
+    // condition floor should be eating its owner alive in parts and lost days,
+    // which is exactly what farmers said about the outfit they were about to
+    // replace.
+    const wear = Math.min(3.2, Math.pow(1 / conditionFactor(item), 1.35));
+    upkeep += base * wear * (item.count || 1);
   }
   // Marked farm fuel is exempt from road tax, on the reasoning that a tractor
   // does not use the highway. Quietly one of the largest standing farm
@@ -1080,7 +1122,7 @@ function phaseSettle(state, record, plan) {
   // off farm land after a century of farmers saying it should.
   const taxContext = { yieldRatio: record.harvest.yieldRatio ?? 1 };
   const taxFactor = quarterTaxFactor(state, taxContext);
-  const taxes = playerQuarters(state.quarters).length * inflate(9, state.year) * taxFactor;
+  const taxes = propertyTax(state) * taxFactor;
   state.cash -= taxes;
   record.expenses.taxes = taxes;
   if (taxFactor < 0.99) {
@@ -1107,6 +1149,55 @@ function phaseSettle(state, record, plan) {
       state.statuteDaysWorked = 0;
       record.expenses.roadTax = commutation;
       record.settle.statuteLabour = { days: 0, paid: commutation };
+    }
+  }
+
+  // --- the household's standard of living -----------------------------------
+  //
+  // A field initialised to 1 and never touched again, which is why the
+  // reference player finished the century with nearly two million dollars in
+  // the bank. Nobody farms for fifty good years and goes on living like 1885.
+  // A family that does well builds a new house, buys a car, puts a child
+  // through Normal School and takes the train to the coast — and then does not
+  // give any of it back the first year the crop is light. That RATCHET is the
+  // reason prairie farms were rich in land and poor in cash, and the reason a
+  // run of good years does not simply bank itself.
+  {
+    const base = livingCost(state) / Math.max(0.0001, state.standardOfLiving ?? 1);
+    const recent = (state.ledger || []).slice(-4);
+    const cleared = recent.length
+      ? recent.reduce((t, r) => t + ((r.income?.total || 0) - (r.expenses?.total || 0)), 0) / recent.length
+      : 0;
+    // Standard of living is set by what the place clears against what it costs
+    // to run the household at the plainest level.
+    const ratio = base > 0 ? cleared / base : 0;
+    const target = clamp(0.85 + 0.42 * Math.max(0, ratio), 0.7, 2.8);
+    const cur = state.standardOfLiving ?? 1;
+    // Rises three times as fast as it falls. Going without again is the hard part.
+    const speed = target > cur ? 0.22 : 0.07;
+    state.standardOfLiving = clamp(cur + (target - cur) * speed, 0.7, 2.8);
+  }
+
+  // Income tax on what the farm cleared. After the interest, because interest
+  // was deductible and the household's own living never was.
+  {
+    const inc = record.income || {};
+    const exp = record.expenses || {};
+    // What the farm earned by farming: the crop, the stock, the programs.
+    // Money it BORROWED is not income and neither is the price of land it sold
+    // to stay afloat, whatever the ledger's gross line says.
+    const earned = ['grain', 'livestock', 'surplusStockSale', 'programPayment',
+      'safetyNetDraw', 'offFarmWork', 'customWork', 'dowry']
+      .reduce((t, k) => t + (inc[k] || 0), 0);
+    const costs = ['seed', 'inputs', 'wages', 'upkeep', 'machinery', 'taxes',
+      'customThreshing', 'interest', 'breaking', 'livestockPurchase',
+      'safetyNetPremium', 'pfaaLevy', 'roadTax', 'improvements', 'legal']
+      .reduce((t, k) => t + (exp[k] || 0), 0);
+    const { tax, band } = incomeTax(state, { grossIncome: earned, deductible: costs });
+    if (tax > 0.5) {
+      state.cash -= tax;
+      record.expenses.incomeTax = tax;
+      record.settle.incomeTax = { amount: tax, rate: band.rate };
     }
   }
 
@@ -1311,6 +1402,16 @@ function phaseWinter(state, record, plan) {
   for (const q of playerQuarters(state.quarters)) {
     const c = CROPS[q.use];
     if (!c) continue;
+
+    // WHAT THIS QUARTER DID THIS YEAR, recorded whether or not it grew
+    // anything. This used to be written only where a crop was harvested, so a
+    // quarter that went wheat, summerfallow, wheat had a history reading
+    // "wheat, wheat" and was scored as continuous wheat — a permanent quarter
+    // off its yield. Summerfallow was the central agronomic practice of the
+    // whole period, the reason prairie farms gave up a third of their acres
+    // every year, and in this model it bought them nothing at all. The median
+    // rotation factor sat at 0.75 in every era including the 1990s.
+    q.cropHistory = [...(q.cropHistory || []), q.use].slice(-6);
     // Guard the ratio: a quarter that was never seeded has 0 seeded acres, and
     // 0/0 or undefined/n would put NaN into fertility, where it would silently
     // make every future harvest on this quarter NaN.
@@ -1535,7 +1636,9 @@ function phaseWinter(state, record, plan) {
         if (rngL.chance(settleChance)) {
           q.owner = 'neighbour';
           q.ownerName = rngL.pick(NEIGHBOUR_NAMES(state));
-          q.brokenAcres = rngL.range(20, 70);
+          // Whoever buys it farms it to the standard of the day — which is
+          // most of it by 1950. Land that changes hands late is not sod.
+          q.brokenAcres = Math.max(q.brokenAcres, settledBrokenAcres(rngL, state.year, q.soil));
           q.use = 'wheat';
         }
       } else if (q.owner === 'neighbour' && !q.forSale && state.year >= 1945 && rngL.chance(consolidationRate(state.year))) {
@@ -1550,7 +1653,7 @@ function phaseWinter(state, record, plan) {
         // Unclaimed homestead land does not stay unclaimed forever.
         q.owner = 'neighbour';
         q.ownerName = rngL.pick(NEIGHBOUR_NAMES(state));
-        q.brokenAcres = rngL.range(15, 55);
+        q.brokenAcres = Math.max(q.brokenAcres, settledBrokenAcres(rngL, state.year, q.soil));
         q.use = 'wheat';
       }
       // A quarter that came up for sale and was not bought is taken by
@@ -1620,9 +1723,15 @@ function applyDowry(state, record, rng, e) {
  * countryside steadily, and the debt crisis of the 1980s emptied it fast.
  */
 function consolidationRate(year) {
-  if (year >= 1980 && year <= 1990) return 0.055; // the farm debt crisis
-  if (year >= 1960) return 0.035;
-  if (year >= 1945) return 0.025;
+  // How often a neighbour gives up in a given year. Manitoba went from about
+  // 58,000 farms in 1941 to 21,000 in 1991 — roughly two per cent of them
+  // leaving every year, not three and a half. At the looser rate the reference
+  // player finished the century holding 3,360 acres as a MEDIAN, when the
+  // median Manitoba farm in 2001 was under 900 and even the large family
+  // operations ran two to three thousand.
+  if (year >= 1980 && year <= 1990) return 0.036; // the farm debt crisis
+  if (year >= 1960) return 0.022;
+  if (year >= 1945) return 0.016;
   return 0;
 }
 

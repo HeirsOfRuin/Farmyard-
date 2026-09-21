@@ -34,6 +34,13 @@ function farmAt(year, { seed = 3, debtFraction = 0 } = {}) {
   state.debts = [];
   if (debtFraction > 0) {
     const principal = Math.max(200, netWorth(state) * debtFraction);
+    // A farm that borrowed half its net worth SPENT it — on land, on a
+    // combine, on a barn. Leaving the cash in the account as well builds a
+    // farm that is heavily mortgaged and flush at the same time, which no
+    // shock can touch: both sides of the 1981 test came through at 22.75%
+    // prime without a single year of distress, and the test could not tell
+    // that from the shock being harmless.
+    state.cash = Math.min(state.cash, principal * 0.05);
     state.debts.push({
       id: 'test1', source: 'bank', sourceName: 'Mortgage',
       principal, original: principal, rate: 0.09,
@@ -51,6 +58,13 @@ function runThrough(state, untilYear) {
     const { record } = runYear(state, makePlan(state));
     if (!record) break;
     if (record.settle?.solvency?.insolvent) distressYears++;
+  }
+  // A farm that was foreclosed in 1932 stops counting, so on a raw tally the
+  // farm that was RUINED can score fewer distress years than the one that
+  // limped through all ten — which is exactly backwards. Losing the place is
+  // distress in every year that remained.
+  if (state.status !== STATUS.ACTIVE) {
+    distressYears += Math.max(0, untilYear - state.year + 1);
   }
   return {
     survived: state.status === STATUS.ACTIVE,

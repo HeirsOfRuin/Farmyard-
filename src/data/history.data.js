@@ -127,6 +127,24 @@ export const HISTORY = [
     effects: { creditEase: 0.4, landMult: 0.82 },
   },
   {
+    year: 1930, id: 'dryCycleBegins', title: 'The rain stops',
+    text: 'It did not rain in June, and it did not rain in July. Older men in the district say they have seen dry years before. They have not seen this.',
+    // THE DUST BOWL, as a decade-long drought cycle rather than one bad
+    // afternoon in 1937. Written as a single forced drought, the thirties were
+    // the most profitable stretch in the game: twenty to twenty-three bushels
+    // an acre every year from 1930 to 1936 and margins over a quarter. Manitoba
+    // actually averaged about ten bushels through those years against a normal
+    // seventeen, and 1937 was the driest year ever recorded in the west.
+    //
+    // Nine years, because that is how long it lasted. The drought tag gets
+    // weighted up and the frost and hail tags are left alone: the thirties
+    // were dry, not generally unlucky.
+    effects: {
+      hazardTagMult: { drought: 3.6 }, beneficialMult: 0.3,
+      moistureShift: -0.22, durationYears: 9,
+    },
+  },
+  {
     year: 1931, id: 'poolCollapse', title: 'The Pools go under',
     text: 'The provincial governments have had to guarantee the Pools’ overdrafts. The central selling agency is finished. Farmers who signed in 1924 are learning what a pooled loss looks like.',
     effects: { poolLossIfMember: true },

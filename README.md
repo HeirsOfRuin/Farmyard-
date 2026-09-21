@@ -86,6 +86,7 @@ node sim/run.js --trace=2 --seed=3           # one run, year by year
 node sim/verify-tiers.js --runs=300          # every claimed tier difference, measured
 node sim/verify-tiers.js --ablate            # turn one subsystem off, diff the rest
 node sim/composition.js                      # income and expenses as shares of gross
+node sim/valuation.js --runs=250             # what a surviving farm is actually worth
 node tools/smoke.mjs                         # drive the real page in a browser
 node tools/check-bundle.mjs                  # does the single file work from disk
 ```
@@ -104,6 +105,26 @@ can only be measured on farms that survived.
 
 `sim/composition.js` reports shares of gross rather than dollars. It is the
 instrument that found seed costing more than the grain was worth.
+
+`sim/valuation.js` reports the balance sheet of the farms that are STILL
+FARMING, split into land, machinery, stock, grain and debt, because the batch
+runner's mean net worth averages a farm that reached 2000 with three thousand
+acres against one foreclosed in 1931 and describes neither. A surviving Settler
+farm in 2000 holds around 2,900 acres and is worth a little under two million
+dollars, most of it land at $563 an acre; the strongest quarter of them run to
+3,700 acres and two and a half million. Those are the numbers to argue with if
+the farm does not feel like a real one.
+
+## What the tiers actually do
+
+Measured over 300 seeded runs each, and the blurbs in `difficulty.data.js` say
+the same thing the instrument does:
+
+| | Homesteader | Settler | Sodbuster |
+|---|---|---|---|
+| reached 1975 with the plaque | 53% | 26% | 10% |
+| median years the line lasted | 101 | 57 | 22 |
+| still farming in 2000 | 19% | 14% | 3% |
 
 ## Layout
 

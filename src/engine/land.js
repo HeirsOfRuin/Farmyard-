@@ -155,11 +155,85 @@ export function seedNeighbours(rng, quarters, surnames, homeQuarterId) {
       const name = rng.pick(families);
       q.owner = 'neighbour';
       q.ownerName = name;
+      // 1875: everybody here has just started too.
       q.brokenAcres = rng.range(8, 35);
       q.use = 'wheat';
     }
   }
   return quarters;
+}
+
+/**
+ * How much of a quarter a going concern has under cultivation in a given year.
+ *
+ * THIS IS THE FIGURE THAT DECIDES WHAT A FARM IS WORTH, and it was wrong.
+ * Every quarter that changed hands — a neighbour selling out in 1975, the CPR
+ * releasing a section in 1960 — arrived carrying 20 to 70 broken acres, the
+ * figure for land somebody had just started on in 1885. So a farm buying its
+ * neighbour's place at the end of the century bought raw prairie, had to break
+ * it against a day budget, and never caught up: farms standing in 2000 owned
+ * 1,120 acres with 461 of them broken.
+ *
+ * On the real ground the frontier closed. Manitoba's improved acreage was
+ * about a fifth of its farmland in 1881 and roughly nine tenths of it by the
+ * 1970s, and a quarter that comes up for sale in 1975 is a quarter that has
+ * been farmed for eighty years. What is NOT cultivated by then is the slough,
+ * the bush in the corner, the yard and the road allowance — not unbroken sod.
+ *
+ * Soil decides the ceiling: slough ground never gets fully cropped without
+ * drainage, and stony land keeps its rough corners.
+ */
+const IMPROVED_SHARE = [
+  [1875, 0.05], [1885, 0.16], [1895, 0.28], [1905, 0.42], [1915, 0.58],
+  [1925, 0.68], [1935, 0.74], [1945, 0.78], [1955, 0.83], [1965, 0.87],
+  [1975, 0.90], [1990, 0.92], [2000, 0.93],
+];
+
+export function improvedShare(year) {
+  const a = IMPROVED_SHARE;
+  if (year <= a[0][0]) return a[0][1];
+  if (year >= a[a.length - 1][0]) return a[a.length - 1][1];
+  for (let i = 1; i < a.length; i++) {
+    if (year <= a[i][0]) {
+      const [y0, v0] = a[i - 1];
+      const [y1, v1] = a[i];
+      return v0 + ((v1 - v0) * (year - y0)) / (y1 - y0);
+    }
+  }
+  return a[a.length - 1][1];
+}
+
+/**
+ * Broken acres on a quarter that an established neighbour is farming in `year`.
+ * `rng` supplies the spread — some places are better kept than others.
+ */
+/**
+ * The most of a quarter that can ever be in crop.
+ *
+ * Never all of it. A quarter carries a yard, a road allowance, the sloughs
+ * that do not drain, the bush in the northeast corner and the stone pile.
+ * Without a ceiling the farm broke every acre it owned and finished the
+ * century cropping 3,327 of 3,360 acres — ninety-nine per cent, which no
+ * quarter section in Manitoba has ever managed.
+ */
+export function croppableShare(q) {
+  const s = soilDef(typeof q === 'string' ? q : q.soil);
+  let ceiling = 0.93;
+  if (s.requiresDrainage) ceiling = (typeof q === 'object' && q.drained) ? 0.8 : 0.42;
+  else if (s.stoniness >= 0.9) ceiling = 0.82;
+  else if (s.id === 'sandy') ceiling = 0.9;
+  return ceiling;
+}
+
+/** The acre ceiling on a quarter, which is what breaking works against. */
+export function maxBrokenAcres(q) {
+  return croppableShare(q) * ACRES_PER_QUARTER;
+}
+
+export function settledBrokenAcres(rng, year, soilId) {
+  const ceiling = croppableShare(soilId);
+  const share = Math.min(improvedShare(year), ceiling) * rng.range(0.8, 1.12);
+  return Math.round(Math.max(0, Math.min(ceiling, share)) * ACRES_PER_QUARTER);
 }
 
 // A quarter section is a half mile square, so one step on the grid is half a

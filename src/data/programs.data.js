@@ -55,7 +55,12 @@ export const PROGRAMS = {
     // The 1986-87 response to the US-EC export subsidy war. A billion dollars,
     // paid on acres, and it is the reason a great many farms saw 1988.
     from: 1986, to: 1987,
-    perAcre: 9.5, note: 'An ad hoc cheque on seeded acres, because the price collapsed for reasons nobody here caused.',
+    // 1875 dollars, like every other figure here — the engine inflates it.
+    // This was written as 9.5 meaning "$9.50 an acre", which the engine duly
+    // multiplied by the 1986 index and paid out at $95 an acre, four times the
+    // real cheque. Every per-acre figure in this file is in 1875 terms.
+    perAcre: 2.5, // ~$25/acre in 1986, which is what the SCGP actually paid
+    note: 'An ad hoc cheque on seeded acres, because the price collapsed for reasons nobody here caused.',
   },
   crowBuyout: {
     id: 'crowBuyout', name: 'Crow Benefit buyout', kind: 'automatic',
@@ -63,7 +68,11 @@ export const PROGRAMS = {
     // paid out to LANDOWNERS — $1.6 billion, one time. The game already charges
     // the farmer the freight increase; this is the other half of that bargain.
     from: 1995, to: 1996,
-    perOwnedAcre: 16, once: true,
+    // $1.6 billion over roughly 57 million prairie acres, weighted toward the
+    // farms furthest from port, came to something near $35 an acre in Manitoba.
+    // In 1875 terms that is 2.6, NOT 16 — as written it paid $213 an acre and
+    // handed a 3,000-acre farm two thirds of a million dollars in one year.
+    perOwnedAcre: 2.6, once: true,
     note: 'The Crow Benefit, capitalised and paid out to the owner of the land. Once, and then the freight is yours.',
   },
 
@@ -95,7 +104,9 @@ export const PROGRAMS = {
     // 1991. A revenue guarantee and a stabilisation account you pay into in the
     // good years and draw from in the bad. The paperwork was considerable.
     from: 1991, to: 2000,
-    premiumPerAcre: 3.6,
+    // 1875 dollars. Written as 3.6 this billed $48 an acre in 1995 — the
+    // producer's share of a GRIP premium was nearer twelve.
+    premiumPerAcre: 0.9,
     // Matched government contribution into the account, drawn when income falls.
     matchRate: 1.0, revenueFloor: 0.7,
     note: 'Pay in when the year is good, draw out when it is not, and Ottawa matches what you put in.',
@@ -139,3 +150,30 @@ export function taxReliefFor(year) {
 
 /** An extra deferral in a year the farm was hit hard, whatever the era. */
 export const DISASTER_TAX_DEFERRAL = 0.5;
+
+// Income tax on farm profit.
+//
+// The Income War Tax Act of 1917 was supposed to be temporary. It was not, and
+// leaving it out of a game that runs to 2000 meant a farm netting two hundred
+// thousand dollars in 1995 kept all of it — which is how the reference player
+// finished the century sitting on $1.9 million in cash.
+//
+// `exempt` is the income below which a farm paid nothing, in that year's
+// dollars; `rate` is the EFFECTIVE average rate on what was over it, not a
+// marginal bracket. Farmers had more room to move than most taxpayers — cash
+// accounting, inventory deferral, income averaging brought in 1945,
+// incorporation later, and the capital gains exemption on farm property from
+// 1985 — so these sit well below the headline rates of the day, deliberately.
+export const INCOME_TAX = [
+  { from: 1917, to: 1929, exempt: 3000, rate: 0.05 },
+  { from: 1930, to: 1939, exempt: 2400, rate: 0.08 },
+  // The war put nearly everyone on the roll for the first time.
+  { from: 1940, to: 1948, exempt: 1500, rate: 0.22 },
+  { from: 1949, to: 1971, exempt: 3000, rate: 0.20 },
+  { from: 1972, to: 1987, exempt: 8000, rate: 0.24 },
+  { from: 1988, to: 2000, exempt: 16000, rate: 0.26 },
+];
+
+export function incomeTaxFor(year) {
+  return INCOME_TAX.find((t) => year >= t.from && year <= t.to) || null;
+}

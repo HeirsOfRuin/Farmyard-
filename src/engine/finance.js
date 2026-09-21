@@ -7,7 +7,9 @@
 // the 1967 Bank Act each widened what was possible, and the engine gates them
 // by year.
 
-import { borrowingRate, creditLimit, totalDebt, netWorth, landValue, debtService } from './derive.js';
+import {
+  borrowingRate, creditLimit, totalDebt, netWorth, landValue, equipmentValue, debtService,
+} from './derive.js';
 import { playerQuarters, quarterValueFactor, ACRES_PER_QUARTER } from './land.js';
 import { landPrice, inflate } from '../data/prices.data.js';
 
@@ -183,7 +185,26 @@ export function assessSolvency(state, { unpaidInterest = 0, soldUnderDuress = 0 
   const couldNotPay = material && interestDue > 0 && unpaidInterest > interestDue * 0.35;
   const soldToSurvive = soldUnderDuress > 0;
   const underwater = worth < 0;
-  const distressed = couldNotPay || soldToSurvive || underwater;
+
+  // THE CREDIT CHANNEL, which is how farms were actually lost in 1982 and in
+  // 1933 — not by failing to make a payment, but by the security going out
+  // from under a payment they were still making. When land fell forty per cent
+  // and the bank's loan-to-value went through the roof, the loan was called and
+  // the farm was sold although it had never missed a cent.
+  //
+  // Without this, a farm servicing its debt was untouchable: the 1981 test ran
+  // a farm geared to sixty per cent of its assets through prime at 22.75% and
+  // it came out with zero years of distress, the same as a farm with no debt
+  // at all. A shock that costs the geared farm nothing is not a shock.
+  // `creditEase` is a multiplier on normal conditions, and it runs well above 1
+  // in a boom — 3.4 in 1979. The gate is therefore "tighter than normal", not
+  // an absolute floor: 0.81 through 1981-84 and 0.25 in 1933 are both squeezes,
+  // and a threshold set below both of them caught neither.
+  const squeeze = (state.modifiers?.creditEase ?? 1) < 0.9;
+  const security = landValue(state) + equipmentValue(state) * 0.4;
+  const overSecured = squeeze && debt > security * 0.72;
+
+  const distressed = couldNotPay || soldToSurvive || underwater || overSecured;
 
   if (distressed) {
     state.distressYears = (state.distressYears || 0) + 1;
@@ -204,6 +225,7 @@ export function assessSolvency(state, { unpaidInterest = 0, soldUnderDuress = 0 
     underwater,
     couldNotPay,
     soldToSurvive,
+    overSecured,
     years: state.distressYears || 0,
     foreclosing: (state.distressYears || 0) > effectiveGrace,
     netWorth: worth,

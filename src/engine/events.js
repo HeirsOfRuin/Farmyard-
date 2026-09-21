@@ -23,10 +23,18 @@ export function rollYearEvents(state, rng, { forced = [], severityOverride = nul
   const conditions = neutralConditions();
   const fired = [];
 
+  // A standing era multiplier on a class of hazard — the drought cycle of the
+  // thirties, and nothing else so far. It does not touch beneficial events.
+  const tagMult = state.modifiers?.hazardTagMult || {};
+  // A drought cycle does not just make bad years likelier, it makes GOOD ones
+  // scarce. "A good year" and "a bumper crop" are the two heaviest events in
+  // the whole table, and leaving them at full weight through the thirties was
+  // most of why the dust bowl kept returning twenty bushels an acre.
+  const goodMult = state.modifiers?.beneficialMult ?? 1;
   const pool = eventsFor(state.year).map((e) => ({
     ...e,
     weight: (e.weight || 0) * (regionWeights[e.tag] ?? 1) *
-      (e.beneficial ? 1 : diff.hazardFrequency),
+      (e.beneficial ? goodMult : diff.hazardFrequency * (tagMult[e.tag] ?? 1)),
   }));
 
   // How many things happen to a farm in a year.

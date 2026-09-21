@@ -29,7 +29,7 @@ import {
 } from '../data/roads.data.js';
 import {
   landPrice, cropPrice, interestRate, livingCostPerAdult, inflate, inflateWage,
-  freightRate, priceIndex,
+  freightRate, priceIndex, propertyTaxRate,
 } from '../data/prices.data.js';
 
 // Workable days in each season on this latitude. Spring covers breaking,
@@ -257,16 +257,30 @@ export function implementsFor(state, operation) {
 }
 
 /** The most capable implement the farm owns for an operation, or null. */
-export function bestImplement(state, operation) {
+export function bestImplement(state, operation, filter) {
+  // `filter` exists because "the best thing to till with" and "the best thing
+  // to BREAK with" are two different questions, and answering both with the
+  // first one is a real bug this codebase shipped: a disc harrow out-works a
+  // gang plow on broken ground, so the moment a farm bought a disc in 1890
+  // bestImplement(state,'till') stopped returning anything that could turn
+  // native sod, breakableAcres() went to zero, and the farm's broken acres
+  // froze at 205 for the next hundred and ten years while it went on buying
+  // land it could never crop.
   const list = implementsFor(state, operation);
   if (!list.length) return null;
   let best = null;
   let bestCap = -1;
   for (const { item, def } of list) {
+    if (filter && !filter(def)) continue;
     const cap = effectiveCapacity(state, item, def);
     if (cap > bestCap) { bestCap = cap; best = { ...def, item, effectiveCapacity: cap }; }
   }
   return best;
+}
+
+/** The best thing on the place that will turn sod, which is not the same thing. */
+export function bestBreaker(state) {
+  return bestImplement(state, 'till', (d) => d.canBreakSod);
 }
 
 /**
@@ -630,13 +644,16 @@ export const BASE_BREAKING_DAYS = 42;
  * actually get.
  */
 export function breakableAcres(state) {
-  const impl = bestImplement(state, 'till');
-  if (!impl || !impl.canBreakSod) {
+  const impl = bestBreaker(state);
+  if (!impl) {
     return { acres: 0, perDay: 0, implement: impl, reason: 'nothing on the place will turn native sod' };
   }
   // Slower than working broken ground, but not by much with a walking plow:
-  // contemporary accounts put it near an acre a day behind oxen.
-  const perDay = impl.effectiveCapacity * 0.85;
+  // contemporary accounts put it near an acre a day behind oxen. A disc or a
+  // heavy cultivator taking out scrub and slough margin is a great deal slower
+  // than the same machine on land already in crop, which is what
+  // `breakingFactor` carries.
+  const perDay = impl.effectiveCapacity * (impl.breakingFactor ?? 0.85);
   return { acres: perDay * BASE_BREAKING_DAYS, perDay, implement: impl };
 }
 
@@ -827,6 +844,18 @@ export function debtService(state) {
     if (d.termYears > 0) principal += d.principal / Math.max(1, d.termYears - (state.year - d.yearTaken));
   }
   return { interest, principal, total: interest + principal };
+}
+
+/**
+ * Municipal and school taxes for the year, before whatever relief the era
+ * offers. A mill rate on what the land is assessed at — so a farm that buys a
+ * quarter and lets it sit pays for the privilege, which is exactly why real
+ * farms did not hoard land they could not crop.
+ *
+ * Single derivation: the ledger charges this and the planning screen shows it.
+ */
+export function propertyTax(state) {
+  return landValue(state) * propertyTaxRate(state.year);
 }
 
 export function netWorth(state) {

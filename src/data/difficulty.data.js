@@ -15,18 +15,18 @@ export const DIFFICULTIES = {
   homesteader: {
     id: 'homesteader',
     name: 'Homesteader',
-    blurb: 'Setbacks hurt but rarely end you. About one line in four reaches the centennial.',
+    blurb: 'Setbacks hurt but rarely end you. About half of all lines reach the centennial.',
     order: 1,
 
     // --- scalars ---
-    startingCapitalMult: 2.4,
-    hazardFrequency: 0.55,
-    hazardSeverity: 0.5,
-    priceVolatility: 0.75,
+    startingCapitalMult: 1.5,
+    hazardFrequency: 0.82,
+    hazardSeverity: 0.78,
+    priceVolatility: 0.8,
     creditRateSpread: -0.025, // below the era's going rate
     maxLoanToValue: 0.7,
-    livingCostMult: 0.7,
-    yieldMult: 1.22,
+    livingCostMult: 0.88,
+    yieldMult: 1.05,
 
     // --- flags: mechanisms on or off ---
     // A disaster cannot take more than this fraction of a year's crop.
@@ -38,7 +38,7 @@ export const DIFFICULTIES = {
     // Siblings who want out will accept instalments rather than forcing a sale.
     siblingsAcceptInstalments: true,
     // Foreclosure requires sustained insolvency, not a single bad year.
-    foreclosureGraceYears: 7,
+    foreclosureGraceYears: 5,
     // There is always an heir somewhere willing to take it on.
     guaranteedHeir: true,
     // Off-farm work is available to carry a bad stretch.
@@ -46,39 +46,59 @@ export const DIFFICULTIES = {
     offFarmWorkMult: 1.15,
 
     estateCashDemandRate: 0.3, // share of non-farming heirs demanding cash now
+    // How often an heir who never wanted the farm sells it rather than take it
+    // on. The commonest way a farm line ended, and the one a player can work
+    // against: raise an heir who wants it, or write a will.
+    reluctantHeirSells: 0.14,
+    // Multiple of recent gross income the family will carry as a note. What is
+    // over it is taken in land instead — the farm shrinks rather than drowns.
+    estateNoteMultiple: 1.5,
   },
 
   settler: {
     id: 'settler',
     name: 'Settler',
-    blurb: 'Drought, debt and a divided estate are all real ways to lose. Roughly one line in six sees 1975.',
+    blurb: 'Drought, debt and a divided estate are all real ways to lose. About one line in four sees 1975.',
     order: 2,
 
-    startingCapitalMult: 1.3,
-    hazardFrequency: 0.85,
-    hazardSeverity: 0.85,
-    priceVolatility: 1.0,
+    // Settler sits at or just inside the historical model. It used to carry a
+    // 22% yield bonus and a 15% discount on hazards while its blurb called it
+    // the ordinary case, which made the claim meaningless. Nothing here is a
+    // gift now; the difference from Sodbuster is in the flags below, not in
+    // free bushels.
+    startingCapitalMult: 0.9,
+    hazardFrequency: 1.18,
+    hazardSeverity: 1.28,
+    priceVolatility: 1.05,
     creditRateSpread: -0.005,
-    maxLoanToValue: 0.6,
-    livingCostMult: 0.9,
-    yieldMult: 1.08,
+    maxLoanToValue: 0.5,
+    livingCostMult: 1.05,
+    yieldMult: 0.93,
 
-    catastropheFloor: 0.25,
+    catastropheFloor: 0.08,
     neighbourAid: true,
+    // A will still holds — writing one is the player's own defence against
+    // the estate, and taking that away belongs to the hardest tier.
     willProtectsLand: true,
+    // Measured, not assumed: turning this OFF made the tier easier, not
+    // harder — a forced land sale leaves a smaller farm with no debt, and a
+    // smaller debt-free farm outlives a bigger mortgaged one. Losing land is
+    // a setback; carrying a note is how farms die. It stays on.
     siblingsAcceptInstalments: true,
-    foreclosureGraceYears: 4,
+    foreclosureGraceYears: 3,
     guaranteedHeir: false,
     offFarmWorkAvailable: true,
-    offFarmWorkMult: 1.0,
+    offFarmWorkMult: 0.85,
 
     estateCashDemandRate: 0.55,
+    estateNoteMultiple: 1.2,
+    reluctantHeirSells: 0.34,
   },
 
   sodbuster: {
     id: 'sodbuster',
     name: 'Sodbuster',
-    blurb: 'Thin margins, hard credit, heirs who want cash. Almost no line survives the first decade, let alone to 1975.',
+    blurb: 'Thin margins, hard credit, heirs who want cash. Roughly one line in ten sees 1975, and most are gone long before.',
     order: 3,
 
     startingCapitalMult: 0.95,
@@ -107,6 +127,8 @@ export const DIFFICULTIES = {
     offFarmWorkMult: 0.55,
 
     estateCashDemandRate: 0.8,
+    estateNoteMultiple: 0.8,
+    reluctantHeirSells: 0.55,
   },
 };
 

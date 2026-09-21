@@ -8,8 +8,9 @@
 
 import {
   PROGRAMS, PROGRAM_LIST, programsAvailable, taxReliefFor, DISASTER_TAX_DEFERRAL,
+  incomeTaxFor,
 } from '../data/programs.data.js';
-import { inflate } from '../data/prices.data.js';
+import { inflate, priceIndex } from '../data/prices.data.js';
 import { playerQuarters, ACRES_PER_QUARTER } from './land.js';
 import { netWorth, totalDebt, livingCost } from './derive.js';
 
@@ -207,6 +208,45 @@ export function quarterTaxFactor(state, context = {}) {
   if (relief) factor *= relief.factor;
   if ((context.yieldRatio ?? 1) < 0.4) factor *= DISASTER_TAX_DEFERRAL;
   return factor;
+}
+
+/**
+ * Income tax on the year's farm profit.
+ *
+ * Charged on what the farm actually cleared in cash — gross receipts less the
+ * costs of earning them — with the household's own living NOT deductible,
+ * because it never was. A loss year pays nothing and, as a farm's accountant
+ * would, carries forward against the next few profitable ones.
+ */
+export function incomeTax(state, { grossIncome = 0, deductible = 0 } = {}) {
+  const band = incomeTaxFor(state.year);
+  if (!band) return { tax: 0, band: null, taxable: 0 };
+
+  const profit = grossIncome - deductible;
+  let carried = state.taxLossCarryForward || 0;
+  if (profit <= 0) {
+    state.taxLossCarryForward = Math.min(carried - profit, Math.abs(profit) * 3);
+    return { tax: 0, band, taxable: 0 };
+  }
+  const applied = Math.min(carried, profit);
+  state.taxLossCarryForward = Math.max(0, carried - applied);
+
+  const exempt = inflateNominal(band.exempt, state.year);
+  const taxable = Math.max(0, profit - applied - exempt);
+  return { tax: taxable * band.rate, band, taxable };
+}
+
+/**
+ * A figure quoted in the dollars of the middle of its own band, carried to the
+ * year in question. The tax table is written in period dollars — a $3,000
+ * exemption in 1917 means three thousand 1917 dollars — so it cannot go
+ * through `inflate`, which expects 1875 terms.
+ */
+function inflateNominal(amount, year) {
+  const band = incomeTaxFor(year);
+  if (!band) return amount;
+  const mid = Math.round((band.from + band.to) / 2);
+  return amount * (priceIndex(year) / priceIndex(mid));
 }
 
 export function taxReliefLabel(state) {

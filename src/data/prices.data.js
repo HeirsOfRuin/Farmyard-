@@ -200,7 +200,26 @@ export const LIVING_COST_PER_ADULT = [
 
 export function priceIndex(year) { return interpolate(PRICE_INDEX, year); }
 export function wageIndex(year) { return interpolate(WAGE_INDEX, year); }
+// Municipal and school taxes on farmland, as a share of assessed market value.
+//
+// This is a MILL RATE, not a fee, and that distinction is the whole point.
+// The game charged a flat $9 a quarter in 1875 dollars, indexed to consumer
+// prices — but land went up 130-fold over the century while consumer prices
+// went up 15-fold, so by 2000 the farm was paying 83 cents an acre against a
+// real Manitoba bill of six to ten dollars. Holding land you never cropped was
+// free, and the reference player duly ended the century sitting on 3,840 acres
+// while seeding 1,200 of them.
+//
+// Rates rose as rural municipalities and school districts took on real
+// spending, and eased after the 1970s when farmland won school-tax rebates.
+export const PROPERTY_TAX_RATE = [
+  [1875, 0.010], [1885, 0.012], [1900, 0.013], [1913, 0.015], [1925, 0.017],
+  [1935, 0.018], [1945, 0.015], [1960, 0.014], [1975, 0.014], [1990, 0.013],
+  [2000, 0.013],
+];
+
 export function landPrice(year) { return interpolate(LAND_PRICE, year); }
+export function propertyTaxRate(year) { return interpolate(PROPERTY_TAX_RATE, year); }
 export function rawLandDiscount(year) { return interpolate(RAW_LAND_DISCOUNT, year); }
 export function interestRate(year) { return interpolate(INTEREST_RATE, year); }
 export function freightRate(year) { return interpolate(FREIGHT_RATE, year); }

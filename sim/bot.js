@@ -12,12 +12,12 @@
 // the operator gets old.
 
 import {
-  farmSummary, bestImplement, seasonCapacity, labourForce, creditLimit,
+  farmSummary, bestImplement, bestBreaker, seasonCapacity, labourForce, creditLimit,
   feedRequired, totalDebt, netWorth, equipmentPrice, draftPower, croppableAcres,
-  livingCost, debtService, carryingCapacity, livestockUnits, breakableAcres,
+  livingCost, debtService, carryingCapacity, livestockUnits, breakableAcres, annualWage,
   techEffect, timelinessFactor, BASE_SPRING_DAYS, BASE_HARVEST_DAYS,
 } from '../src/engine/derive.js';
-import { playerQuarters, ACRES_PER_QUARTER, quarterById } from '../src/engine/land.js';
+import { playerQuarters, ACRES_PER_QUARTER, quarterById, maxBrokenAcres } from '../src/engine/land.js';
 import { cropsAvailable, CROPS, WHEAT_VARIETIES } from '../src/data/crops.data.js';
 import { cropPrice, inflate, priceIndex } from '../src/data/prices.data.js';
 import { EQUIPMENT, equipmentAvailable } from '../src/data/equipment.data.js';
@@ -108,7 +108,7 @@ export function makePlan(state, opts = {}) {
   }
 
   // --- 2. break new ground --------------------------------------------------
-  const breaker = bestImplement(state, 'till');
+  const breaker = bestBreaker(state);
   if (breaker?.canBreakSod) {
     plan.breakAcres = {};
     // Break toward what the outfit can crop, plus a margin so breaking LEADS
@@ -118,7 +118,7 @@ export function makePlan(state, opts = {}) {
     let deficit = target - sum.acresBroken;
     for (const q of owned) {
       if (deficit <= 0) break;
-      const room = ACRES_PER_QUARTER - q.brokenAcres;
+      const room = maxBrokenAcres(q) - q.brokenAcres;
       if (room <= 1) continue;
       const take = Math.min(room, deficit, 45);
       plan.breakAcres[q.id] = take;
@@ -288,9 +288,27 @@ export function makePlan(state, opts = {}) {
   }
 
   // --- 9. hired help --------------------------------------------------------
+  //
+  // A real farm hired to match its acres, and that is the point: wages are a
+  // FIXED cost that falls due whether or not the crop comes. Capped at a
+  // single hand, the reference player spent under two per cent of gross on
+  // labour for a century — a 500-acre farm in 1910 running on the family
+  // alone — and the farm had almost no operating leverage, which is most of
+  // why a bad year could not finish it. Hiring properly buys capacity AND the
+  // exposure that goes with it.
+  //
+  // How many acres one worker covers rises with the machinery: about 90 behind
+  // horses, several hundred behind a tractor and a combine.
   const labour = labourForce(state);
-  const acresPerHand = sum.acresCropped / Math.max(0.5, labour.units);
-  plan.hiredHands = acresPerHand > 90 && cash > reserve * 2 ? 1 : 0;
+  const perWorker = Math.max(
+    90,
+    Math.min(bestImplement(state, 'seed')?.capacity ?? 0, bestImplement(state, 'harvest')?.capacity ?? 0) * 14
+  );
+  const shortfall = sum.acresCropped / perWorker - labour.family;
+  const wage = annualWage(state);
+  // Hire what the acres need, and only as many as the year can pay for.
+  const affordable = Math.max(0, (cash - reserve) / Math.max(1, wage * 1.5));
+  plan.hiredHands = Math.max(0, Math.min(Math.round(shortfall), Math.floor(affordable), 6));
 
   // --- 10. government programs ----------------------------------------------
   // Free or cost-shared money with no strings is simply taken. Debt review is
@@ -520,8 +538,16 @@ function chooseRotation(state, owned, opts = {}) {
     let pick;
 
     // Far ground that loses a lot to distance goes to grass rather than grain.
+    //
+    // NEVER the nearest quarter, whatever the arithmetic says. `byDistance` is
+    // sorted, so `i > 0` means there is closer ground than this; without that
+    // guard a farm with one broken field could put its whole place into
+    // pasture — `timelinessFactor` folds in capacity as well as distance, so a
+    // small outfit on its own home quarter reads as "far" — and seed 108 did
+    // exactly that, grazing its only field for fifteen years, never growing a
+    // bushel, and going under owing money it had no crop to pay with.
     const lostToDistance = opts.ignoreDistance ? 0 : 1 - timelinessFactor(state, q);
-    if (lostToDistance > 0.18 && hayLeft > 0) {
+    if (i > 0 && lostToDistance > 0.18 && hayLeft > 0) {
       use[q.id] = 'pasture';
       hayLeft -= q.brokenAcres * 0.5;
       i++;
@@ -529,11 +555,31 @@ function chooseRotation(state, owned, opts = {}) {
     }
 
     // Feed first, in whole fields, smallest commitment that covers it.
+    //
+    // THE ROTATION HAS TO TURN. Written as `i % 3 === 2` against a list sorted
+    // by distance — which is the same order every year — the third quarter out
+    // was summerfallowed every single year and the first two grew wheat on
+    // wheat for a century. The farm fallowed a quarter of its acres and got
+    // none of the benefit: 95% of its wheat followed wheat, and the rotation
+    // penalty sat at a permanent 25% in every era. Phasing by the year is what
+    // makes each field take its turn, which is what summerfallow WAS.
+    const phase = i + year;
+    const lastCrop = (q.cropHistory || []).slice(-1)[0];
     if (hayLeft >= q.brokenAcres * 0.5) { pick = 'hay'; hayLeft -= q.brokenAcres; }
     else if (oatLeft >= q.brokenAcres * 0.5) { pick = 'oats'; oatLeft -= q.brokenAcres; }
-    else if (needsFallow && i % 3 === 2) pick = 'fallow';
-    else if (!opts.noDiversify && i % 4 === 3 && available.has('barley')) pick = 'barley';
+    else if (needsFallow && phase % 3 === 2) pick = 'fallow';
+    else if (!opts.noDiversify && phase % 4 === 3 && available.has('barley')) pick = 'barley';
     else pick = cashCrop;
+
+    // Never follow a crop with itself when there is anything else to sow. The
+    // rotation index handles the general case; this catches the quarters the
+    // feed and distance rules pulled out of sequence.
+    if (pick === lastCrop && pick !== 'fallow' && pick !== 'pasture') {
+      const alt = pick === cashCrop
+        ? (needsFallow ? 'fallow' : available.has('barley') ? 'barley' : pick)
+        : cashCrop;
+      if (available.has(alt) || alt === 'fallow') pick = alt;
+    }
 
     use[q.id] = available.has(pick) ? pick : 'wheat';
     i++;

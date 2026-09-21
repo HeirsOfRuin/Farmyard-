@@ -121,6 +121,11 @@ export const EQUIPMENT = {
     id: 'oneWayDisc', name: 'One-way disc', category: 'tillage', operation: 'till',
     from: 1925, to: 1975, price: 310, priceYear: 1928,
     capacity: 22, draftNeeded: 18, lifespanYears: 20, upkeep: 16,
+    // A one-way was a breaking implement as well as a fallow implement — it
+    // was what took the last of the scrub and slough margins into crop between
+    // the wars. Without a sod-breaker on this end of the tech tree, a farm
+    // that bought a disc in 1890 could never break another acre.
+    canBreakSod: true, breakingFactor: 0.75,
     // The one-way made summerfallow cheap and chewed the soil to dust doing it.
     erosionFactor: 1.35,
     note: 'The machine that made summerfallow cheap, and helped hand the topsoil to the wind in the thirties.',
@@ -136,6 +141,10 @@ export const EQUIPMENT = {
     id: 'heavyCultivator', name: 'Heavy-duty cultivator', category: 'tillage', operation: 'till',
     from: 1972, to: 2000, price: 9500, priceYear: 1975,
     capacity: 165, draftNeeded: 120, lifespanYears: 20, upkeep: 320,
+    // Land clearing after the war was a heavy cultivator and a four-wheel-drive
+    // pulling out bush and levelling slough margins. Slow work per acre
+    // compared with what the same outfit does on broken ground.
+    canBreakSod: true, breakingFactor: 0.45,
     erosionFactor: 0.75,
     note: 'Forty feet of it behind a four-wheel-drive. A half-section in a long day.',
   },

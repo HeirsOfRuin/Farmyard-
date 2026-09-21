@@ -16,7 +16,10 @@
 // precisely the point.
 
 import { heirCandidates, estateClaimants, fullName, age, isAlive, operator } from './family.js';
-import { netWorth, landValue, equipmentValue, livestockValue, granaryValue, totalDebt } from './derive.js';
+import {
+  netWorth, landValue, equipmentValue, livestockValue, granaryValue, totalDebt,
+  livingCost, clamp,
+} from './derive.js';
 import { playerQuarters, quarterValueFactor, ACRES_PER_QUARTER } from './land.js';
 import { landPrice, inflate } from '../data/prices.data.js';
 import { STATUS } from './state.js';
@@ -171,7 +174,23 @@ export function settleEstate(state, rng, { heirId, deceased, division }) {
   //    that stayed whole are remarked on.
   if (remaining > 0 && diff.siblingsAcceptInstalments) {
     const gross = recentGrossIncome(state);
-    const serviceable = Math.max(inflate(150, state.year), gross * 4);
+    // WHAT THE FARM CAN CARRY, not what it grosses. A note at five per cent
+    // over twenty years costs a tenth of its principal every year. A farm whose
+    // living costs already take a third of gross and whose margin in a good
+    // year is a tenth cannot find more than about an eighth of gross for a
+    // family note — so the ceiling is a little over one year's gross, not four.
+    //
+    // Written as four, this was the single largest killer in the game: a clear,
+    // solvent farm grossing $900 inherited a $6,200 note in 1909, spent the
+    // next decade unable to meet the interest, and the lender called it in
+    // 1920. Half of all runs died between 1900 and 1929 that way, in the one
+    // stretch when the number of Manitoba farms was actually RISING.
+    //
+    // What is over the ceiling goes as land, which is the honest alternative
+    // and the historically common one: the farm gets smaller and carries on.
+    // Losing a quarter is a setback; losing the place is the end of the run.
+    const carry = state.difficultyDef.estateNoteMultiple ?? 1.2;
+    const serviceable = Math.max(inflate(150, state.year), gross * carry);
     const asNote = Math.min(remaining, serviceable);
     const asLand = remaining - asNote;
 
@@ -278,10 +297,49 @@ export function runSuccession(state, rng, { reason, deceased }) {
   // already here, and the farm still needs working in the spring. Requiring an
   // explicit yes ended nearly half of all lines with the family standing in
   // the yard.
+  let reluctant = false;
   if (!heir) {
     heir = candidates.find((c) => c.wantsFarm !== false) || null;
     if (heir) {
+      reluctant = true;
       log.push(`${fullName(heir)} took the farm on because it was there to be taken on.`);
+    }
+  }
+
+  // THE WAY MOST FARM LINES ACTUALLY ENDED, and the one the game had no path
+  // for: a solvent family that sold up. Not foreclosure, not a line with no
+  // heir left — a son who was never keen, a good offer from the neighbour who
+  // wanted the land anyway, and a house in town. Manitoba went from 58,000
+  // farms to 21,000 over this century and only a fraction of that was failure.
+  //
+  // With economic ruin and outright refusal as the only exits, 59% of lines
+  // still held the same ground in 1975. The real figure for 1875 homestead
+  // families was a small fraction of that, which is exactly why a centennial
+  // plaque was worth having.
+  //
+  // An heir who WANTED it, or who was named in a will, is not offered this:
+  // wanting the farm and writing a will are what keep it, and both are things
+  // the player can do something about.
+  if (heir && reluctant) {
+    const base = state.difficultyDef.reluctantHeirSells ?? 0.3;
+    // Leaving got easier as the century went on. In 1890 there was nowhere
+    // much to go; by 1960 there was a job in the city and a road to it.
+    const era = state.year < 1900 ? 0.45 : state.year < 1930 ? 0.7
+      : state.year < 1950 ? 1.0 : state.year < 1975 ? 1.35 : 1.45;
+    // A farm that makes a good living is harder to walk away from.
+    const gross = recentGrossIncome(state);
+    const keep = clamp(gross / Math.max(1, livingCost(state) * 2.5), 0.45, 1.8);
+    if (rng.chance(clamp((base * era) / keep, 0, 0.92))) {
+      state.status = STATUS.LINE_ENDED;
+      state.outcome = {
+        kind: 'soldUp',
+        year: state.year,
+        reason: `${fullName(heir)} had never wanted to farm. The place was sold, ` +
+          'whole and solvent, and the family moved to town.',
+        generation: state.family.generation,
+      };
+      log.push(state.outcome.reason);
+      return { ok: false, log, lineEnded: true, soldUp: true };
     }
   }
 
