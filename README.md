@@ -128,7 +128,7 @@ the same thing the instrument does:
 
 ## Playing it on a phone
 
-`node tools/bundle.js` writes two files:
+`node tools/bundle.js` writes three builds:
 
 - `dist/centennial-farm.html` — the whole game in one file. Open it from
   anywhere, including a phone's downloads folder. It carries the home-screen
@@ -137,6 +137,34 @@ the same thing the instrument does:
 - `dist/centennial-farm.embed.html` — the same game as page CONTENT, with no
   document of its own, for a host that supplies the skeleton. It zeroes the
   safe-area tokens because such a host has already paid for the notch.
+- `docs/` — the installable build, for GitHub Pages. This is the only one a
+  phone will actually INSTALL. A browser offers that only for a page it loaded
+  itself over https, with a manifest and a service worker at the same origin;
+  a `file://` copy has no origin worth the name and a page embedded in another
+  site has somebody else's, so neither can qualify however many meta tags it
+  carries. The service worker is also what makes it run with no signal, and its
+  cache name carries the build's own hash so a deploy retires the last one.
+
+  Test it over http, never file://: `python3 -m http.server` from inside
+  `docs/`, then check the manifest resolves and the page still opens with the
+  network switched off.
+
+## The walkthrough
+
+`src/ui/tutorial.js` is eleven steps across the first years, and it teaches by
+doing: a step that can be finished by an action in the game is finished that
+way, so nobody is told to break sod and then has to press an unrelated button
+to prove they read it. It never blocks — no overlay, nothing disabled — and its
+progress rides in the SAVE rather than in browser storage, so resuming a farm
+in 1932 does not open by explaining what sod is, and a second game on the same
+device teaches a new player again.
+
+Two things a walkthrough of the real page caught that reading the code did not.
+A step waiting on an action the player never takes held back every step behind
+it, so action steps now retire after a set number of years. And the step
+explaining the first year could never appear at all: sod is only broken once a
+year has been worked, so by the time the breaking step ticked, the first-year
+step was already satisfied and got skipped.
 
 At 1000px and under the map stops being a column and becomes a tab, the tab
 strip and the "work the year" button both stick to the edges of the screen, and
