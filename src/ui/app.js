@@ -25,6 +25,32 @@ const app = document.getElementById('app');
 let state = null;
 let draft = emptyDraft();
 let tab = 'plan';
+
+// ---------------------------------------------------------------------------
+// One layout or the other, decided by how much room there is
+// ---------------------------------------------------------------------------
+//
+// On a desktop the map has its own column beside the ledger, which is the
+// whole presentation: map and books side by side. A phone has room for one of
+// them at a time, so there the map becomes a TAB.
+//
+// The alternative was to put both on screen and let the map scroll away above
+// the tabs. On a 125-turn game that costs a scroll back to the top on every
+// single tab switch, which over a full playthrough is the difference between
+// a game you finish and one you put down.
+const NARROW = '(max-width: 1000px)';
+const narrowQuery = typeof window !== 'undefined' && window.matchMedia
+  ? window.matchMedia(NARROW) : null;
+function narrow() { return !!narrowQuery?.matches; }
+
+const TAB_LABELS = {
+  map: 'Map', plan: 'The year', market: 'Buy & sell',
+  books: 'The books', family: 'Family',
+};
+function tabsFor() {
+  const rest = ['plan', 'market', 'books', 'family'];
+  return narrow() ? ['map', ...rest] : rest;
+}
 let mapMode = 'use';
 let selectedQuarter = null;
 let modal = null;
@@ -158,32 +184,19 @@ function renderGame() {
     </div>
 
     <div class="main">
-      <div class="mapwrap">
-        <div class="map-head">
-          <h2>The township</h2>
-          <span class="hint">Click a quarter to look at it.</span>
-          <span style="margin-left:auto"></span>
-          <button class="btn sm" data-map="use" ${mapMode === 'use' ? 'disabled' : ''}>what's growing</button>
-          <button class="btn sm" data-map="soil" ${mapMode === 'soil' ? 'disabled' : ''}>soil</button>
-          <button class="btn sm" data-map="roads" ${mapMode === 'roads' ? 'disabled' : ''}>roads &amp; distance</button>
-        </div>
-        ${renderMap(state, { selectedId: selectedQuarter, mode: mapMode })}
-        <div class="legend">${renderLegend(state, mapMode)}</div>
-        ${selectedQuarter ? renderQuarterDetail() : ''}
-        ${renderChronicle()}
-      </div>
+      ${narrow() ? '' : `<div class="mapwrap">${renderMapPane(state)}</div>`}
 
       <div class="side">
         <div class="tabs" role="tablist">
-          ${['plan', 'market', 'books', 'family'].map((t) => `
-            <button role="tab" aria-selected="${tab === t}" data-tab="${t}">${
-              { plan: 'The year', market: 'Buy & sell', books: 'The books', family: 'Family' }[t]}</button>`).join('')}
+          ${tabsFor().map((t) => `
+            <button role="tab" aria-selected="${tab === t}" data-tab="${t}">${TAB_LABELS[t]}</button>`).join('')}
         </div>
         <div class="panel">
-          ${tab === 'plan' ? `<section><h3>Needs your decision</h3>${renderAttention(state)}</section>${renderPlan(state, draft)}`
+          ${tab === 'map' ? renderMapPane(state)
             : tab === 'market' ? renderMarket(state, draft)
             : tab === 'books' ? renderBooks(state)
-            : renderFamily(state)}
+            : tab === 'family' ? renderFamily(state)
+            : `<section><h3>Needs your decision</h3>${renderAttention(state)}</section>${renderPlan(state, draft)}`}
         </div>
         <div class="actionbar">
           <button class="btn primary wide" data-act="work">Work the year &rarr; ${state.year + 1}</button>
@@ -191,6 +204,31 @@ function renderGame() {
       </div>
     </div>
     ${modal ? modal : ''}`;
+}
+
+/**
+ * The township: the map, its view switches, the legend, the selected quarter
+ * and the farm's own record underneath.
+ *
+ * ONE function, used by the desktop's left-hand column and by the phone's Map
+ * tab. Rendering it twice — once per layout — would be two maps with the same
+ * element ids and two sets of click handlers disagreeing about which quarter
+ * is selected.
+ */
+function renderMapPane(state) {
+  return `
+    <div class="map-head">
+      <h2>The township</h2>
+      <span class="hint">${narrow() ? 'Tap' : 'Click'} a quarter to look at it.</span>
+      <span style="margin-left:auto"></span>
+      <button class="btn sm" data-map="use" ${mapMode === 'use' ? 'disabled' : ''}>what's growing</button>
+      <button class="btn sm" data-map="soil" ${mapMode === 'soil' ? 'disabled' : ''}>soil</button>
+      <button class="btn sm" data-map="roads" ${mapMode === 'roads' ? 'disabled' : ''}>roads &amp; distance</button>
+    </div>
+    ${renderMap(state, { selectedId: selectedQuarter, mode: mapMode })}
+    <div class="legend">${renderLegend(state, mapMode)}</div>
+    ${selectedQuarter ? renderQuarterDetail() : ''}
+    ${renderChronicle()}`;
 }
 
 /**
@@ -480,12 +518,31 @@ function onChange(e) {
  * by things people do routinely. A century of play should not live only
  * somewhere that a cleared cache can take it.
  */
-function exportSave() {
+async function exportSave() {
+  const filename = `centennial-farm-${state.family.surname}-${state.year}.json`;
+  const text = serialize(state);
+
+  // Some hosts do not let an embedded page start a download of its own — an
+  // <a download> there is a button that does nothing, which is worse than no
+  // button. Where the host offers a save, ask it; otherwise do it ourselves.
   try {
-    const blob = new Blob([serialize(state)], { type: 'application/json' });
+    const downloads = await window.claude?.use?.('downloads');
+    if (downloads) {
+      await downloads.save({ filename, data: text });
+      return;
+    }
+  } catch (err) {
+    // `declined` is the player changing their mind, not a failure.
+    if (err?.code === 'declined' || err?.code === 'rate_limited') return;
+    alert(`The game could not be written to a file: ${err?.message || 'unknown error'}`);
+    return;
+  }
+
+  try {
+    const blob = new Blob([text], { type: 'application/json' });
     const a = document.createElement('a');
     a.href = URL.createObjectURL(blob);
-    a.download = `centennial-farm-${state.family.surname}-${state.year}.json`;
+    a.download = filename;
     document.body.appendChild(a);
     a.click();
     a.remove();
@@ -533,6 +590,15 @@ function render() {
 }
 
 // ---------------------------------------------------------------------------
+
+// Rotating the phone, or dragging a desktop window narrow, changes which
+// layout applies. Re-render, and if the Map tab has just stopped existing,
+// move off it — otherwise the panel would render a map that now has its own
+// column, twice on one screen.
+narrowQuery?.addEventListener?.('change', () => {
+  if (!narrow() && tab === 'map') tab = 'plan';
+  render();
+});
 
 document.addEventListener('click', onClick);
 document.addEventListener('change', onChange);

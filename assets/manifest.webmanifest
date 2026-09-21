@@ -1,0 +1,15 @@
+{
+  "name": "Centennial Farm",
+  "short_name": "Centennial",
+  "description": "A Manitoba farm, 1875 to 2000. Five generations, one quarter section to start.",
+  "start_url": ".",
+  "scope": ".",
+  "display": "standalone",
+  "orientation": "portrait-primary",
+  "background_color": "#f3ead8",
+  "theme_color": "#f3ead8",
+  "icons": [
+    { "src": "assets/icon-180.png", "sizes": "180x180", "type": "image/png" },
+    { "src": "assets/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any maskable" }
+  ]
+}

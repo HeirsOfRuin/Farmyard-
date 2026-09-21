@@ -112,6 +112,27 @@ function order() {
 
 const html = await readFile(join(ROOT, 'index.html'), 'utf8');
 const css = await readFile(join(ROOT, 'src/ui/styles.css'), 'utf8');
+
+// The home-screen icon and the manifest go INTO the file.
+//
+// The whole point of this build is one file that needs nothing beside it, and
+// an <link rel="apple-touch-icon" href="assets/..."> in a file somebody opened
+// from their downloads folder is a broken reference. Both become data URIs.
+async function dataUri(rel, type) {
+  const buf = await readFile(join(ROOT, rel));
+  return `data:${type};base64,${buf.toString('base64')}`;
+}
+const icon180 = await dataUri('assets/icon-180.png', 'image/png');
+const icon512 = await dataUri('assets/icon-512.png', 'image/png');
+const manifest = JSON.parse(await readFile(join(ROOT, 'assets/manifest.webmanifest'), 'utf8'));
+manifest.icons = [
+  { src: icon180, sizes: '180x180', type: 'image/png' },
+  { src: icon512, sizes: '512x512', type: 'image/png', purpose: 'any maskable' },
+];
+// A manifest as a data URI so there is no second request. Android accepts this;
+// iOS does not read the manifest at all and uses the apple-* tags instead.
+const manifestUri = `data:application/manifest+json;base64,${
+  Buffer.from(JSON.stringify(manifest)).toString('base64')}`;
 await load(ENTRY);
 
 const parts = ['const __m = {};'];
@@ -135,11 +156,38 @@ const script = `<script type="module">\n${parts.join('\n\n')}\n</script>`;
 const styleTag = `<style>\n${css}\n</style>`;
 const bundled = html
   .replace(/<link rel="stylesheet"[^>]*>/, () => styleTag)
-  .replace(/<script type="module"[^>]*><\/script>/, () => script);
+  .replace(/<script type="module"[^>]*><\/script>/, () => script)
+  // Assert the match, because a scripted edit that matches nothing still
+  // reports success and the icon would silently not exist.
+  .replace(/href="assets\/icon-180\.png"/, () => `href="${icon180}"`)
+  .replace(/href="assets\/manifest\.webmanifest"/, () => `href="${manifestUri}"`);
+
+for (const [what, needle] of [['icon', icon180.slice(0, 40)], ['manifest', manifestUri.slice(0, 40)]]) {
+  if (!bundled.includes(needle)) throw new Error(`bundle: the ${what} was not inlined — the tag in index.html moved`);
+}
 
 await mkdir(join(ROOT, 'dist'), { recursive: true });
 await writeFile(join(ROOT, OUT), bundled, 'utf8');
 
+// A second build for hosts that supply their own page skeleton.
+//
+// An artifact is wrapped in a document at publish time, so a file that brings
+// its own <html>/<head>/<body> would have them dropped and its <meta> tags
+// stranded in the body where nothing reads them. This build is content only.
+// It also zeroes the safe-area tokens, because that host has already padded
+// the root by the insets and paying for the notch twice leaves a band of dead
+// space across the top of a phone.
+const embedded = [
+  '<title>Centennial Farm</title>',
+  styleTag,
+  '<style>:root { --sa-top: 0px; --sa-bottom: 0px; --sa-left: 0px; --sa-right: 0px; }',
+  '  html, body { height: 100%; }</style>',
+  '<div id="app"></div>',
+  script,
+].join('\n');
+await writeFile(join(ROOT, 'dist/centennial-farm.embed.html'), embedded, 'utf8');
+
 const kb = (bundled.length / 1024).toFixed(0);
 console.log(`${OUT} — ${modules.size} modules, ${kb} KB, no dependencies`);
+console.log(`dist/centennial-farm.embed.html — ${(embedded.length / 1024).toFixed(0)} KB, for a host that supplies the page`);
 console.log('Open it directly in a browser; it needs no server.');

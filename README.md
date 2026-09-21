@@ -126,6 +126,29 @@ the same thing the instrument does:
 | median years the line lasted | 101 | 57 | 22 |
 | still farming in 2000 | 19% | 14% | 3% |
 
+## Playing it on a phone
+
+`node tools/bundle.js` writes two files:
+
+- `dist/centennial-farm.html` — the whole game in one file. Open it from
+  anywhere, including a phone's downloads folder. It carries the home-screen
+  icon and the standalone-app tags inline, so Add to Home Screen gives a real
+  launcher rather than a bookmark.
+- `dist/centennial-farm.embed.html` — the same game as page CONTENT, with no
+  document of its own, for a host that supplies the skeleton. It zeroes the
+  safe-area tokens because such a host has already paid for the notch.
+
+At 1000px and under the map stops being a column and becomes a tab, the tab
+strip and the "work the year" button both stick to the edges of the screen, and
+every control grows to a 44px target. The desktop layout is untouched — the two
+builds are pixel-identical there. `node tools/make-icon.mjs` redraws the icon.
+
+A hundred and twenty-five turns is several sittings, so the game writes itself
+to `localStorage` after every year and the setup screen offers to resume. That
+storage is per-browser and per-device and routine things clear it, which is what
+"save to file" is for; where the host will not let an embedded page start a
+download, the save is handed to the host instead.
+
 ## Layout
 
 ```

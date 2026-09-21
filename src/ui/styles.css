@@ -102,7 +102,6 @@ button { font: inherit; color: inherit; }
 .stat .v.pos { color: var(--good); }
 
 .main { flex: 1; display: grid; grid-template-columns: minmax(0,1fr) 400px; gap: 0; align-items: start; }
-@media (max-width: 1000px) { .main { grid-template-columns: 1fr; } }
 
 .mapwrap { padding: 16px; min-width: 0; }
 .side {
@@ -111,7 +110,21 @@ button { font: inherit; color: inherit; }
   min-height: calc(100vh - 56px);
   display: flex; flex-direction: column;
 }
-@media (max-width: 1000px) { .side { border-left: none; border-top: 2px solid var(--rule-strong); min-height: 0; } }
+@media (max-width: 1000px) {
+  /* One column. The map is not here at all — at this width the render puts it
+     behind the Map tab instead, so there is nothing to scroll past. */
+  .main { grid-template-columns: 1fr; }
+  .side { border-left: none; border-top: 2px solid var(--rule-strong); min-height: 0; }
+
+  /* The tabs stay put while the panel under them scrolls. Without this, every
+     tab switch in a 125-turn game costs a scroll back to the top.
+     The header gives up its own sticky position to make room: two sticky bars
+     at top:0 simply overlap, and on a 664px screen the header was taking a
+     third of it. The year and the cash are the first thing in every tab
+     anyway, and they come back the moment you scroll up. */
+  .topbar { position: static; }
+  .main > .tabs { position: sticky; top: 0; z-index: 16; }
+}
 
 /* ---------- township map ---------- */
 .map-head { display: flex; align-items: baseline; gap: 12px; margin-bottom: 8px; flex-wrap: wrap; }
@@ -258,3 +271,85 @@ table.ledger th { text-align: left; font-weight: 600; color: var(--ink-3); font-
   text-transform: uppercase; letter-spacing: .05em; padding: 4px 6px; border-bottom: 1px solid var(--rule-strong); }
 table.ledger td { padding: 3px 6px; border-bottom: 1px solid var(--rule); }
 table.ledger td.n { font-family: var(--mono); text-align: right; font-variant-numeric: tabular-nums; }
+
+/* ---------------------------------------------------------------------------
+   PHONE
+   ---------------------------------------------------------------------------
+   This game is a hundred and twenty-five turns long. On a phone that is a
+   commute, several commutes, so the things that matter here are the ones that
+   make a long session survivable: thumbs that hit what they aim at, nothing
+   hidden under the notch or the home indicator, and no gesture that can throw
+   away a year's planning.
+
+   Kept in a separate block rather than woven through, so the desktop layout
+   above stays exactly as it was and this can be read as one piece.
+   --------------------------------------------------------------------------- */
+
+html {
+  /* iOS inflates text in landscape unless told not to. */
+  -webkit-text-size-adjust: 100%;
+  /* Pull-to-refresh reloads the page. Mid-year, that is a spring's planning
+     gone — the save is written at the END of a year, not during one. */
+  overscroll-behavior-y: contain;
+}
+
+#app {
+  /* 100vh on mobile Safari counts the URL bar that is about to slide away, so
+     the page is always slightly too tall and jumps as you scroll. dvh is the
+     height actually available. The vh line stays as the fallback. */
+  min-height: 100vh;
+  min-height: 100dvh;
+}
+
+/* Out from under the notch, the status bar and the home indicator. With
+   viewport-fit=cover the page paints edge to edge, which is what makes an
+   installed web app look like an app; these put the CONTENT back inside. */
+/* Through tokens, not env() directly, because a host that has ALREADY padded
+   the root by the insets needs them back at zero or the notch is paid for
+   twice. The standalone file keeps the real values. */
+:root {
+  --sa-top:    env(safe-area-inset-top, 0px);
+  --sa-bottom: env(safe-area-inset-bottom, 0px);
+  --sa-left:   env(safe-area-inset-left, 0px);
+  --sa-right:  env(safe-area-inset-right, 0px);
+}
+.topbar { padding-top: calc(10px + var(--sa-top)); }
+.topbar, .actionbar, .panel, .center {
+  padding-left: calc(16px + var(--sa-left));
+  padding-right: calc(16px + var(--sa-right));
+}
+.actionbar { padding-bottom: calc(12px + var(--sa-bottom)); }
+
+@media (pointer: coarse) {
+  /* 44px is the smallest thing a thumb hits reliably. The desktop build is
+     denser on purpose and is left alone — this only fires on a touch screen. */
+  .btn { min-height: 44px; padding: 10px 16px; }
+  .btn.sm { min-height: 40px; min-width: 40px; padding: 8px 12px; font-size: .8rem; }
+  .tabs button { min-height: 46px; }
+  /* No 300ms wait for a double-tap that is not coming. */
+  .btn, .tabs button, button { touch-action: manipulation; }
+  /* A long press on a control should not select its label or pop the callout
+     menu. The ledger and the year's notes are left selectable — those are
+     there to be read, and sometimes copied out. */
+  .topbar, .tabs, .actionbar, .btn { -webkit-user-select: none; user-select: none; }
+  .topbar, .tabs, .actionbar { -webkit-touch-callout: none; }
+}
+
+@media (max-width: 560px) {
+  body { font-size: 16px; }             /* 16px stops iOS zooming on focus */
+  .topbar { gap: 10px; padding-left: 12px; padding-right: 12px; }
+  .brand .year { font-size: 1.35rem; }
+  /* Four or five stat blocks will not fit across a phone. They wrap and scroll
+     sideways instead of squeezing to nothing. */
+  .topbar .stat { min-width: 0; }
+  .panel, .center { padding-left: 14px; padding-right: 14px; }
+  .center { padding-top: 24px; }
+
+  /* The one button that ends the year stays where the thumb is, whatever the
+     panel above it is doing. Without this it sits at the bottom of a long
+     scroll and every turn costs a hunt for it. */
+  .actionbar {
+    position: sticky; bottom: 0; z-index: 15;
+    box-shadow: 0 -8px 20px rgba(0, 0, 0, .13);
+  }
+}

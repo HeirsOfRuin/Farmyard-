@@ -2,9 +2,24 @@
 <html lang="en">
 <head>
 <meta charset="utf-8" />
-<meta name="viewport" content="width=device-width, initial-scale=1" />
+<!-- viewport-fit=cover lets the page paint under the notch and the home
+     indicator; the CSS then pads the content back out of them. -->
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
 <title>Centennial Farm</title>
 <meta name="description" content="A Manitoba farm, 1875 to 2000. Five generations, one quarter section to start." />
+
+<!-- Added to the home screen, this opens without browser chrome and looks like
+     an app. iOS reads the apple-* tags and ignores the manifest; Android reads
+     the manifest and ignores these. Both are needed. -->
+<meta name="apple-mobile-web-app-capable" content="yes" />
+<meta name="mobile-web-app-capable" content="yes" />
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+<meta name="apple-mobile-web-app-title" content="Centennial" />
+<meta name="theme-color" content="#f3ead8" media="(prefers-color-scheme: light)" />
+<meta name="theme-color" content="#1b1814" media="(prefers-color-scheme: dark)" />
+<link rel="apple-touch-icon" href="assets/icon-180.png" />
+<link rel="manifest" href="assets/manifest.webmanifest" />
+
 <link rel="stylesheet" href="src/ui/styles.css" />
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='13' font-size='13'>🌾</text></svg>" />
 </head>
