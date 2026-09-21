@@ -23,7 +23,7 @@ import { CROPS, cropsAvailable, WHEAT_VARIETIES } from '../data/crops.data.js';
 import { EQUIPMENT, equipmentAvailable } from '../data/equipment.data.js';
 import { TECHNOLOGIES } from '../data/tech.data.js';
 import { LIVESTOCK, LIVESTOCK_PRICING } from '../data/livestock.data.js';
-import { cropPrice } from '../data/prices.data.js';
+import { cropPrice, FIRST_YEAR } from '../data/prices.data.js';
 import { operator, age, fullName, heirCandidates, TRAITS, isAlive } from '../engine/family.js';
 import { storageCapacity, interpAnchors } from '../engine/market.js';
 import { quarterPurchasePrice } from '../engine/turn.js';
@@ -154,13 +154,23 @@ export function attentionItems(state) {
   }
 
   // --- new things in the world this year ---
-  for (const e of Object.values(EQUIPMENT)) {
-    if (e.from !== state.year) continue;
-    items.push({ kind: 'era', text: `New this year: the ${e.name.toLowerCase()}. ${e.note}` });
-  }
-  for (const t of Object.values(TECHNOLOGIES)) {
-    if (t.from !== state.year) continue;
-    items.push({ kind: 'era', text: `New this year: ${t.name.toLowerCase()}. ${t.note}` });
+  //
+  // NOT IN THE FIRST YEAR. "New this year" means the world changed, and in
+  // 1875 nothing has: everything on the list has simply always existed. Left
+  // unguarded this announced the plow, the scythe, the flail, the wagon, the
+  // oxen and everything else in one go — ten cards of noise as the player's
+  // very first look at the game, burying the two decisions that actually
+  // needed making. Anything available at the start belongs in Buy & sell,
+  // where it can be read at leisure.
+  if (state.year > (state.startYear ?? FIRST_YEAR)) {
+    for (const e of Object.values(EQUIPMENT)) {
+      if (e.from !== state.year) continue;
+      items.push({ kind: 'era', text: `New this year: the ${e.name.toLowerCase()}. ${e.note}` });
+    }
+    for (const t of Object.values(TECHNOLOGIES)) {
+      if (t.from !== state.year) continue;
+      items.push({ kind: 'era', text: `New this year: ${t.name.toLowerCase()}. ${t.note}` });
+    }
   }
   for (const c of Object.values(CROPS)) {
     if (c.from === state.year && state.year > 1875) {

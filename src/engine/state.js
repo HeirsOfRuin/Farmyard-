@@ -110,6 +110,15 @@ export function newGame({ seed = 1, difficulty = 'settler', background = 'ontari
     modifiers: {},
     activeEffects: [], // { effects, expiresAfter }
 
+    // Where the farm started, so the walkthrough can say "two years in" without
+    // hardcoding 1875 and without the UI keeping a second copy of it.
+    startYear: FIRST_YEAR,
+    startingEquipmentCount: equipment.length,
+    // The walkthrough's progress rides in the SAVE, not in browser storage:
+    // resuming a game in 1932 should not start explaining what sod is, and a
+    // second game on the same device should teach a new player again.
+    tutorial: { seen: [], dismissed: false },
+
     // Per-year record. This is the ledger the player reads and the data the
     // balance harness measures, so it is built by the engine, never by the UI.
     ledger: [],
@@ -167,6 +176,12 @@ export function rehydrate(s) {
   s.difficultyDef = difficultyDef(s.difficulty);
   s.backgroundDef = backgroundDef(s.background);
   s.regionDef = regionDef(s.region);
+  // Fields added after this save was written. A game in progress from an
+  // earlier build must keep loading — the walkthrough simply does not run for
+  // it, which is right: it is already years past anything it would explain.
+  if (s.startYear == null) s.startYear = FIRST_YEAR;
+  if (s.startingEquipmentCount == null) s.startingEquipmentCount = (s.equipment || []).length;
+  if (!s.tutorial) s.tutorial = { seen: [], dismissed: true };
   return s;
 }
 

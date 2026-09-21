@@ -19,12 +19,17 @@ import { CENTENNIAL_YEAR, LAST_YEAR, FIRST_YEAR } from '../data/prices.data.js';
 import { renderMap, renderLegend, esc } from './map.js';
 import { renderAttention, renderPlan, renderMarket, renderBooks, renderFamily } from './panels.js';
 import { money, qty } from './format.js';
+import {
+  activeStep, ackStep, dismissTutorial, reconcileTutorial, markShown,
+} from './tutorial.js';
 
 const app = document.getElementById('app');
 
 let state = null;
 let draft = emptyDraft();
 let tab = 'plan';
+let coachCollapsed = false;
+let lastCoachStep = null;
 
 // ---------------------------------------------------------------------------
 // One layout or the other, decided by how much room there is
@@ -54,7 +59,7 @@ function tabsFor() {
 let mapMode = 'use';
 let selectedQuarter = null;
 let modal = null;
-let setup = { difficulty: 'settler', background: 'ontario' };
+let setup = { difficulty: 'settler', background: 'ontario', walkthrough: true };
 
 function emptyDraft() {
   return {
@@ -151,6 +156,13 @@ function renderSetup() {
           </button>`).join('')}
       </div>
 
+      <label class="walkthrough-opt">
+        <input type="checkbox" id="setup-walkthrough" data-setup="walkthrough" ${setup.walkthrough ? 'checked' : ''} />
+        <span>Show the walkthrough &mdash; twelve short notes across the first years,
+          each one waiting until you have done the thing before it. You can switch it
+          off at any point.</span>
+      </label>
+
       <button class="btn primary wide" data-act="start">File on a homestead</button>
       <p class="det" style="font-size:.78rem;color:var(--ink-3);margin-top:14px">
         The game saves itself in this browser after every year.</p>
@@ -196,7 +208,7 @@ function renderGame() {
             : tab === 'market' ? renderMarket(state, draft)
             : tab === 'books' ? renderBooks(state)
             : tab === 'family' ? renderFamily(state)
-            : `<section><h3>Needs your decision</h3>${renderAttention(state)}</section>${renderPlan(state, draft)}`}
+            : `${renderCoach(state)}<section><h3>Needs your decision</h3>${renderAttention(state)}</section>${renderPlan(state, draft)}`}
         </div>
         <div class="actionbar">
           <button class="btn primary wide" data-act="work">Work the year &rarr; ${state.year + 1}</button>
@@ -204,6 +216,41 @@ function renderGame() {
       </div>
     </div>
     ${modal ? modal : ''}`;
+}
+
+/**
+ * The walkthrough card.
+ *
+ * It sits at the top of the year rather than floating over the screen: an
+ * overlay has to be dismissed before the player can look at the thing it is
+ * describing, which is exactly backwards. This can be read, ignored, collapsed
+ * or switched off, and it never disables a control.
+ */
+function renderCoach(state) {
+  const step = activeStep(state);
+  if (!step) return '';
+  markShown(state, step.id, state.year);
+  const collapsed = coachCollapsed;
+
+  return `
+    <section class="coach${collapsed ? ' collapsed' : ''}">
+      <div class="coach-head">
+        <span class="coach-tag">Walkthrough &middot; ${step.number} of ${step.total}</span>
+        <span style="margin-left:auto"></span>
+        <button class="btn sm" data-act="coach-collapse">${collapsed ? 'show' : 'hide'}</button>
+        <button class="btn sm" data-act="coach-off" title="Switch the walkthrough off for this game">no thanks</button>
+      </div>
+      ${collapsed ? '' : `
+        <h3>${esc(step.title)}</h3>
+        <p class="coach-body">${step.body}</p>
+        <div class="coach-foot">
+          ${step.tab && step.tab !== tab && (step.tab !== 'map' || narrow())
+            ? `<button class="btn sm" data-tab="${step.tab}">take me there</button>` : ''}
+          ${step.ack
+            ? `<button class="btn primary sm" data-act="coach-next" data-step="${step.id}">Got it</button>`
+            : `<span class="coach-wait">Do that and this moves on by itself.</span>`}
+        </div>`}
+    </section>`;
 }
 
 /**
@@ -430,6 +477,9 @@ function workYear() {
       pendingEnd = after;
     }
   }
+  // Anything the year just made true is now taught. Done before the save so
+  // the walkthrough's progress rides along with it.
+  reconcileTutorial(state);
   const saved = saveToStorage(state);
   if (!saved.ok) console.warn('Could not save:', saved.reason);
   render();
@@ -448,11 +498,20 @@ function onClick(e) {
   if (!t) return;
 
   const act = t.dataset.act;
-  if (act === 'start') { state = newGame(setup); draft = freshDraft(state); render(); return; }
+  if (act === 'start') {
+    state = newGame(setup);
+    if (!setup.walkthrough) dismissTutorial(state);
+    draft = freshDraft(state);
+    render();
+    return;
+  }
   if (act === 'resume') { const r = loadFromStorage(); if (r.ok) { state = r.state; draft = freshDraft(state); render(); } return; }
   if (act === 'discard') { clearStorage(); renderSetup(); return; }
   if (act === 'newgame') { clearStorage(); state = null; modal = null; pendingEnd = null; renderSetup(); return; }
   if (act === 'close') { modal = null; render(); return; }
+  if (act === 'coach-next') { ackStep(state, t.dataset.step); saveToStorage(state); render(); return; }
+  if (act === 'coach-collapse') { coachCollapsed = !coachCollapsed; render(); return; }
+  if (act === 'coach-off') { dismissTutorial(state); saveToStorage(state); render(); return; }
   if (act === 'showend') { modal = pendingEnd; pendingEnd = null; render(); return; }
   if (act === 'work') { workYear(); return; }
   if (act === 'theme') { toggleTheme(); return; }
@@ -501,6 +560,9 @@ function onClick(e) {
 
 function onChange(e) {
   const t = e.target;
+  // No re-render: the setup screen would rebuild the checkbox out from under
+  // the click that set it.
+  if (t.dataset.setup === 'walkthrough') { setup.walkthrough = t.checked; return; }
   if (t.dataset.field) { draft.fieldUse[t.dataset.field] = t.value; render(); return; }
   if (t.dataset.break) {
     const v = Math.max(0, Number(t.value) || 0);
@@ -587,6 +649,22 @@ function toggleTheme() {
 function render() {
   if (!state) { renderSetup(); return; }
   renderGame();
+
+  // A new walkthrough step is no use below the fold. The panel can be a long
+  // scroll by the second year, and the card sits at the top of it — the first
+  // screenshot of the finished thing had the card off-screen above a wall of
+  // the year's notices. Only on a CHANGE of step, so it never fights a player
+  // who has scrolled down to read something.
+  const step = activeStep(state);
+  if (step && step.id !== lastCoachStep) {
+    lastCoachStep = step.id;
+    const el = app.querySelector('.coach');
+    if (el && typeof el.scrollIntoView === 'function') {
+      el.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+    }
+  } else if (!step) {
+    lastCoachStep = null;
+  }
 }
 
 // ---------------------------------------------------------------------------
