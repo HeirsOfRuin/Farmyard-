@@ -24,7 +24,7 @@ import { EQUIPMENT, equipmentAvailable } from '../src/data/equipment.data.js';
 import { TECHNOLOGIES, techAvailable } from '../src/data/tech.data.js';
 import { LIVESTOCK, LIVESTOCK_PRICING } from '../src/data/livestock.data.js';
 import { creditSourcesAvailable } from '../src/engine/finance.js';
-import { operator, age, heirCandidates } from '../src/engine/family.js';
+import { operator, age, heirCandidates, pendingLifeChoices } from '../src/engine/family.js';
 import { quarterPurchasePrice } from '../src/engine/turn.js';
 import { distanceFromYard } from '../src/engine/land.js';
 import { offeredPrograms } from '../src/engine/programs.js';
@@ -38,6 +38,18 @@ export const BOT_CHOICES = {
   landRunup: 'expandCareful', // 1979: buys one quarter cash, does not gear up
   crowEnds: 'goCanola',       // 1995: shifts acres rather than building a barn
 };
+
+// How the bot answers marriage and coming-of-age, the same way it answers a
+// scripted history decision — fixed, and written down, rather than left to
+// fall back on whatever advanceFamily() defaults to when nothing is
+// supplied. It happens to be the SAME choice either way (`standAside` /
+// `letThemDecide` is the fallback), but relying on that silently would mean
+// a future change to the fallback quietly retunes the reference player. This
+// is what "does not get involved" means for a bot: it neither pushes a match
+// nor pays to send anyone to school, which is the closest equivalent to the
+// old, choice-less behaviour every balance figure in this game was tuned
+// against.
+const LIFE_CHOICE_DEFAULT = { marriage: 'standAside', comingOfAge: 'letThemDecide' };
 
 /**
  * What the farm must keep in the account to put next year's crop in and keep
@@ -72,6 +84,18 @@ export function makePlan(state, opts = {}) {
   // baseline — that is how you find out whether a decision in the game
   // actually matters, rather than asserting that it does.
   const plan = { choiceResponse: { ...BOT_CHOICES, ...(opts.choices || {}) } };
+
+  // Marriage and coming-of-age decisions are dynamic — which person, if any,
+  // has one pending is different in every run — so unlike BOT_CHOICES this
+  // cannot be a fixed table. Same policy every time regardless of who is
+  // asking: `opts.lifeChoices` overrides it per person, the same way
+  // `opts.choices` overrides a scripted decision, for an ablation that wants
+  // to know whether this feature moves anything.
+  plan.lifeChoices = {};
+  for (const choice of pendingLifeChoices(state)) {
+    plan.lifeChoices[choice.personId] =
+      opts.lifeChoices?.[choice.personId] ?? LIFE_CHOICE_DEFAULT[choice.kind];
+  }
   const sum = farmSummary(state);
   const owned = playerQuarters(state.quarters);
   const cash = state.cash;

@@ -1627,7 +1627,7 @@ function phaseWinter(state, record, plan) {
   }
 
   // --- the family -----------------------------------------------------------
-  const famEvents = advanceFamily(state, rng);
+  const famEvents = advanceFamily(state, rng, plan);
   record.family = famEvents;
   for (const e of famEvents) {
     state.log.push({ year: state.year, kind: e.kind, text: e.text });

@@ -86,6 +86,11 @@ for (let i = 0; i < YEARS; i++) {
       await page.locator('[data-act="close"]').first().click();
     } else if (await page.locator('[data-choice]').count()) {
       await page.locator('[data-choice]').first().click();
+    } else if (await page.locator('[data-life]').count()) {
+      // A marriage or coming-of-age decision — dynamic, so it can come up in
+      // year one if the founder started unmarried. Same handling as a dated
+      // decision: take the first option offered.
+      await page.locator('[data-life]').first().click();
     } else if (await page.locator('[data-act="showend"]').count()) {
       await page.locator('[data-act="showend"]').first().click();
       break;
@@ -110,7 +115,7 @@ await page.screenshot({ path: `${SHOTS}/3-worked.png` });
 async function clearOverlays(label) {
   for (let i = 0; i < 6; i++) {
     if (!(await page.locator('.scrim').count())) return true;
-    const btn = page.locator('.scrim [data-act], .scrim [data-choice]').first();
+    const btn = page.locator('.scrim [data-act], .scrim [data-choice], .scrim [data-life]').first();
     if (!(await btn.count())) break;
     await btn.click({ timeout: 2000 }).catch(() => {});
     await page.waitForTimeout(80);

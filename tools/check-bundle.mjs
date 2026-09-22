@@ -35,8 +35,8 @@ if (started) {
     await page.click('[data-act="work"]');
     await page.waitForTimeout(80);
     for (let g = 0; g < 4; g++) {
-      if (await page.locator('.scrim [data-act], .scrim [data-choice]').count()) {
-        await page.locator('.scrim [data-act], .scrim [data-choice]').first().click().catch(() => {});
+      if (await page.locator('.scrim [data-act], .scrim [data-choice], .scrim [data-life]').count()) {
+        await page.locator('.scrim [data-act], .scrim [data-choice], .scrim [data-life]').first().click().catch(() => {});
         await page.waitForTimeout(60);
       } else break;
     }

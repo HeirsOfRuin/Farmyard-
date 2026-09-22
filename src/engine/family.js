@@ -11,6 +11,10 @@
 
 import { namePool, surnamePool } from '../data/names.data.js';
 import { TRAITS, TRAIT_IDS, POSITIVE_TRAITS, traitEffect } from '../data/traits.data.js';
+import {
+  marriageEraFor, MARRIAGE_CHECK_AGES, educationEraFor,
+} from '../data/life.data.js';
+import { inflate } from '../data/prices.data.js';
 
 // Re-exported for callers that used to import these from here. The table
 // itself now lives in src/data/traits.data.js, alongside every other numbers
@@ -53,6 +57,8 @@ export function makeCharacter(rng, { surname, origin, sex, birthYear, traits = [
     marriedYear: null,
     inheritedShare: 0,
     wantsFarm: null, // decided when they come of age
+    schoolReturnYear: null,
+    schoolReturnChance: null,
   };
 }
 
@@ -191,59 +197,237 @@ export function foundFamily(rng, { backgroundDef, year, difficultyDef }) {
 }
 
 /**
+ * The chance an unmarried adult of age `a` gets a marriage OPPORTUNITY at
+ * all — this is separate from the player's choice about it, and it is what
+ * gives the marriage rate its shape: a sole operator with nobody else on the
+ * place needed a spouse to farm at all and got proposed to far more often,
+ * and even a well-favoured match sometimes just does not happen this year.
+ */
+function marriageOddsThisCheck(state, m) {
+  const year = state.year;
+  const fam = state.family;
+  const soleOperator = m.id === fam.operatorId &&
+    fam.members.filter((x) => isAlive(x) && !x.away && age(year, x) >= 16).length === 1;
+  return soleOperator ? 0.85 : m.sex === 'male' ? 0.55 : 0.62;
+}
+
+/**
+ * Every decision the player owes an answer to THIS year: a child come of age
+ * deciding school or the farm, and an unmarried adult at a marriage-check
+ * age. Pure and read-only — the UI calls this before the year is worked, to
+ * know whether to stop and ask, exactly the way it already checks
+ * `historyFor(year)` for a scripted decision. Nothing here rolls `rng`:
+ * eligibility can never depend on a random draw the UI has no way to make
+ * itself, only the RESOLUTION (inside advanceFamily) can.
+ */
+export function pendingLifeChoices(state) {
+  const year = state.year;
+  const out = [];
+  for (const m of state.family.members) {
+    if (!isAlive(m) || m.away) continue;
+    const a = age(year, m);
+
+    if (a === 18 && m.wantsFarm === null) {
+      out.push(comingOfAgeChoice(state, m));
+      continue; // one decision a year for one person is enough
+    }
+
+    if (!m.spouseId && m.wantsFarm !== false && MARRIAGE_CHECK_AGES.includes(a)) {
+      out.push(marriageChoice(state, m));
+    }
+  }
+  return out;
+}
+
+function comingOfAgeChoice(state, m) {
+  const era = educationEraFor(state.year);
+  const options = [
+    { id: 'farm', label: 'Keep them on the place',
+      detail: 'They stay, and the work is theirs to learn. No cost, and no time lost to it.' },
+    { id: 'letThemDecide', label: 'Let them decide for themselves',
+      detail: 'Say nothing either way and see which way they lean on their own.' },
+  ];
+  if (era.available) {
+    const cost = Math.round(inflate(era.cost, state.year));
+    options.splice(1, 0, {
+      id: 'school', label: `Send them to ${era.label}`,
+      detail: `$${cost.toLocaleString()} and gone ${era.yearsAway} years. They may come back to the place ` +
+        'with a good deal more than they left with, or they may not come back at all.',
+      cost,
+    });
+  }
+  return {
+    kind: 'comingOfAge',
+    personId: m.id,
+    title: `${fullName(m)} turns eighteen`,
+    prompt: `${fullName(m)} is grown. ${era.available
+      ? 'There is schooling to be had, for a price, if you want it for them.'
+      : 'There is no school out here beyond what the place itself teaches.'}`,
+    options,
+  };
+}
+
+function marriageChoice(state, m) {
+  const era = marriageEraFor(state.year);
+  return {
+    kind: 'marriage',
+    personId: m.id,
+    title: `${fullName(m)}`,
+    prompt: era.prompt(fullName(m)),
+    options: [
+      { id: 'encourage', label: 'Encourage it', detail: era.encourageDetail },
+      { id: 'wait', label: 'Ask them to wait', detail: era.waitDetail },
+      { id: 'standAside', label: 'Leave it to them', detail: era.standAsideDetail },
+    ],
+  };
+}
+
+/**
  * One year of demography: everyone ages, some marry, some are born, some die,
  * some leave. Returns narrative entries for the ledger — the player should
  * always be told why the labour force changed.
+ *
+ * `plan.lifeChoices` is `{ [personId]: optionId }`, answered exactly the way
+ * `plan.choiceResponse` answers a scripted history decision: collected by the
+ * UI from `pendingLifeChoices()` before the year runs. An unanswered choice
+ * defaults to the hands-off option (`letThemDecide` / `standAside`) rather
+ * than blocking the engine — the UI stops and asks first, so in practice this
+ * only matters for a saved plan built without going through it (the bot, or a
+ * test), and the hands-off default is the OLD, silent behaviour this feature
+ * replaces, so nothing regresses for a caller that never opts in.
  */
-export function advanceFamily(state, rng) {
+export function advanceFamily(state, rng, plan = {}) {
   const events = [];
   const fam = state.family;
   const year = state.year;
   const diff = state.difficultyDef;
 
-  // --- coming of age: do they want the farm? --------------------------------
+  // --- coming of age: the farm, school, or leave it to them -----------------
+  // Silent until this feature: a child turned 18 and the game rolled dice
+  // behind the screen to decide whether they wanted the place. It is a choice
+  // now, answered in `plan.lifeChoices` (see pendingLifeChoices() above).
+  const wantsFarmRoll = (m) => {
+    // The pull away from the farm grew steadily across the century. By the
+    // 1970s keeping an heir was the hard part, not raising one. This is the
+    // OLD unconditional roll, kept as what "let them decide for themselves"
+    // and an unanswered choice both still fall back to.
+    const eraStay =
+      year < 1900 ? 0.78 :
+      year < 1930 ? 0.68 :
+      year < 1950 ? 0.55 :
+      year < 1970 ? 0.42 :
+      year < 1990 ? 0.32 : 0.28;
+    let p = eraStay;
+    if (m.traits.includes('restless')) p *= traitEffect('restless', 'stayChance');
+    if (m.traits.includes('stubborn')) p *= traitEffect('stubborn', 'stayChance');
+    if (m.sex === 'female' && year < 1960) p *= 0.35; // daughters rarely inherited the operation
+    if (state.difficultyDef.guaranteedHeir) p = Math.max(p, 0.85);
+    return rng.chance(p);
+  };
+
   for (const m of fam.members) {
     if (!isAlive(m) || m.away) continue;
     const a = age(year, m);
-    if (a === 18 && m.wantsFarm === null) {
-      // The pull away from the farm grew steadily across the century. By the
-      // 1970s keeping an heir was the hard part, not raising one.
-      const eraStay =
-        year < 1900 ? 0.78 :
-        year < 1930 ? 0.68 :
-        year < 1950 ? 0.55 :
-        year < 1970 ? 0.42 :
-        year < 1990 ? 0.32 : 0.28;
-      let p = eraStay;
-      if (m.traits.includes('restless')) p *= traitEffect('restless', 'stayChance');
-      if (m.traits.includes('stubborn')) p *= traitEffect('stubborn', 'stayChance');
-      if (m.sex === 'female' && year < 1960) p *= 0.35; // daughters rarely inherited the operation
-      if (state.difficultyDef.guaranteedHeir) p = Math.max(p, 0.85);
-      m.wantsFarm = rng.chance(p);
-      if (!m.wantsFarm && rng.chance(0.55)) {
+    if (a !== 18 || m.wantsFarm !== null) continue;
+
+    const answer = plan.lifeChoices?.[m.id] ?? 'letThemDecide';
+
+    if (answer === 'farm') {
+      m.wantsFarm = true;
+      events.push({ kind: 'comingOfAge', text: `${fullName(m)} is staying on to work the place.` });
+      continue;
+    }
+
+    if (answer === 'school') {
+      const era = educationEraFor(year);
+      if (era.available && state.cash >= era.cost) {
+        state.cash -= era.cost;
         m.away = true;
-        m.awayReason = year < 1920 ? 'gone west to file on land of their own'
-          : year < 1950 ? 'gone to the city for work'
-          : 'gone to the city for school and stayed';
-        events.push({ kind: 'departure', text: `${fullName(m)} has left the farm — ${m.awayReason}.` });
+        m.awayReason = `gone to ${era.label}`;
+        m.schoolReturnYear = year + era.yearsAway;
+        m.schoolReturnChance = era.returnChance;
+        events.push({
+          kind: 'departure',
+          text: `${fullName(m)} has gone to ${era.label} — $${Math.round(era.cost).toLocaleString()}, ` +
+            `and expected back around ${m.schoolReturnYear}.`,
+          cost: era.cost,
+        });
+        continue;
       }
+      // Could not afford it, or it is not on offer yet — the choice was made
+      // in good faith and falls through to the same roll as standing aside,
+      // rather than silently doing nothing.
+    }
+
+    // 'letThemDecide', or 'school' that could not be paid for.
+    m.wantsFarm = wantsFarmRoll(m);
+    if (!m.wantsFarm && rng.chance(0.55)) {
+      m.away = true;
+      m.awayReason = year < 1920 ? 'gone west to file on land of their own'
+        : year < 1950 ? 'gone to the city for work'
+        : 'gone to the city for school and stayed';
+      events.push({ kind: 'departure', text: `${fullName(m)} has left the farm — ${m.awayReason}.` });
     }
   }
 
-  // --- marriage -------------------------------------------------------------
+  // --- coming home from school ------------------------------------------------
+  for (const m of fam.members) {
+    if (!isAlive(m) || !m.away || m.schoolReturnYear !== year) continue;
+    const came = rng.chance(m.schoolReturnChance ?? 0.4);
+    if (came) {
+      m.away = false;
+      m.wantsFarm = true;
+      m.awayReason = null;
+      if (!m.traits.includes('literate')) m.traits = [...m.traits, 'literate'];
+      events.push({ kind: 'return', text: `${fullName(m)} has come home from school, and stayed.` });
+    } else {
+      m.wantsFarm = false;
+      m.awayReason = year < 1950 ? 'stayed on to teach, once the schooling was done'
+        : 'stayed in the city — the schooling led somewhere else';
+      events.push({ kind: 'departure', text: `${fullName(m)} finished school and did not come back — ${m.awayReason}.` });
+    }
+    m.schoolReturnYear = null;
+  }
+
+  // --- marriage ---------------------------------------------------------------
+  // Checked at fixed ages (MARRIAGE_CHECK_AGES), not rolled every year, so the
+  // UI can know a decision is pending without running any randomness itself —
+  // see pendingLifeChoices() above. Silent until this feature: a family
+  // member used to simply be married off in the ledger with no warning and
+  // no way to answer for it.
   for (const m of fam.members) {
     if (!isAlive(m) || m.spouseId || m.away) continue;
     const a = age(year, m);
-    if (a < 20 || a > 40) continue;
     if (m.wantsFarm === false) continue;
-    // A homestead needed two people to work at all, and an unmarried
-    // homesteader looked hard and did not look long. If this man is the whole
-    // family, the farm's survival depends on it.
-    const soleOperator = m.id === fam.operatorId &&
-      fam.members.filter((x) => isAlive(x) && !x.away && age(year, x) >= 16).length === 1;
-    let p = m.sex === 'male' ? 0.17 : 0.2;
-    if (soleOperator) p = 0.42;
-    if (!rng.chance(p)) continue;
+    if (!MARRIAGE_CHECK_AGES.includes(a)) continue;
+
+    const era = marriageEraFor(year);
+    const answer = plan.lifeChoices?.[m.id] ?? 'standAside';
+    const baseOdds = marriageOddsThisCheck(state, m);
+
+    let proceeds = false;
+    let dowryMult = 1;
+    let rebelled = false;
+
+    if (answer === 'encourage') {
+      proceeds = rng.chance(Math.min(0.95, baseOdds * 1.6));
+      dowryMult = 1.3;
+    } else if (answer === 'wait') {
+      // Reliable early, a coin flip by the end of the century — a match that
+      // goes ahead against the family's wishes brings less with it, and less
+      // still the later it happens.
+      if (!rng.chance(era.waitReliability)) {
+        proceeds = true;
+        rebelled = true;
+        dowryMult = era.rebelDowryMult;
+      }
+    } else {
+      // 'standAside', or anything else: the same odds as if nobody had an
+      // opinion, which is the OLD, silent behaviour this feature replaces.
+      proceeds = rng.chance(baseOdds);
+    }
+
+    if (!proceeds) continue;
 
     const spouse = makeCharacter(rng, {
       surname: fam.surname,
@@ -263,20 +447,29 @@ export function advanceFamily(state, rng) {
     fam.marriagesMade++;
 
     // A marriage brought labour, and often capital and connections with it.
-    // This was the single most reliable way a prairie farm got bigger.
+    // This was the single most reliable way a prairie farm got bigger — and a
+    // rebellious match, or one the family only stood aside for, brought less
+    // of it than one they actively backed.
+    // Weights sum to 100 at dowryMult=1, which is exactly the original,
+    // unweighted table — encourage and a rebellious match move share between
+    // "brought nothing" and everything else without any risk of a division
+    // by the rebel multiplier, which is legitimately zero in the modern era.
     const dowry = rng.weighted([
-      { kind: 'none', weight: 34 },
-      { kind: 'cash', weight: 30 },
-      { kind: 'livestock', weight: 22 },
-      { kind: 'land', weight: 8 },
-      { kind: 'connections', weight: 6 },
-    ]).kind;
+      { kind: 'none', weight: Math.max(5, 100 - 66 * dowryMult) },
+      { kind: 'cash', weight: 30 * dowryMult },
+      { kind: 'livestock', weight: 22 * dowryMult },
+      { kind: 'land', weight: 8 * dowryMult },
+      { kind: 'connections', weight: 6 * dowryMult },
+    ])?.kind ?? 'none';
     events.push({
       kind: 'marriage',
-      text: `${fullName(m)} married ${spouse.name} ${spouse.surname}.`,
+      text: rebelled
+        ? `${fullName(m)} married ${spouse.name} ${spouse.surname} anyway, whatever was said about waiting.`
+        : `${fullName(m)} married ${spouse.name} ${spouse.surname}.`,
       dowry,
       spouseId: spouse.id,
       characterId: m.id,
+      rebelled,
     });
   }
 

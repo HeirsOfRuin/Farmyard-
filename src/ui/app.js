@@ -11,7 +11,7 @@ import {
 import { runYear } from '../engine/turn.js';
 import { farmSummary, netWorth, totalDebt, croppableAcres, breakableAcres } from '../engine/derive.js';
 import { playerQuarters, legalDescription, quarterById } from '../engine/land.js';
-import { operator, fullName, age } from '../engine/family.js';
+import { operator, fullName, age, pendingLifeChoices } from '../engine/family.js';
 import { historyFor } from '../data/history.data.js';
 import { BACKGROUND_LIST } from '../data/names.data.js';
 import { DIFFICULTY_LIST } from '../data/difficulty.data.js';
@@ -67,7 +67,7 @@ function emptyDraft() {
     buyLivestock: {}, sellLivestock: {}, buyLand: [], adoptTech: [],
     loans: [], improvements: [], fileHomestead: null, writeWill: null,
     roadWorks: [], takeUpPrograms: [],
-    choiceResponse: {},
+    choiceResponse: {}, lifeChoices: {},
   };
 }
 
@@ -408,6 +408,26 @@ function choiceModal(h) {
     </div></div>`;
 }
 
+/**
+ * A marriage or coming-of-age decision — the same shape as choiceModal
+ * above, but for something dynamic (which person, if anyone) rather than a
+ * fixed year in the history table, so it comes from pendingLifeChoices()
+ * instead of historyFor().
+ */
+function lifeChoiceModal(choice) {
+  return `<div class="scrim"><div class="modal">
+      <header><h2>${esc(choice.title)}</h2></header>
+      <div class="body">
+        <p class="narr">${esc(choice.prompt)}</p>
+        ${choice.options.map((o) => `
+          <button class="choice" data-life="${choice.personId}" data-option="${o.id}">
+            <div class="lab">${esc(o.label)}</div>
+            <div class="det">${esc(o.detail)}</div>
+          </button>`).join('')}
+      </div>
+    </div></div>`;
+}
+
 function endModal() {
   const o = state.outcome || {};
   const sum = farmSummary(state);
@@ -460,6 +480,16 @@ function workYear() {
     return;
   }
 
+  // Same idea, for a marriage or a child come of age: something the game used
+  // to just decide, silently, is now something the year stops and asks about
+  // first — exactly the way a scripted history decision already does.
+  const pendingLife = pendingLifeChoices(state).filter((c) => !draft.lifeChoices[c.personId]);
+  if (pendingLife.length) {
+    modal = lifeChoiceModal(pendingLife[0]);
+    render();
+    return;
+  }
+
   const plan = { ...draft };
   if (!Object.keys(plan.buyLivestock).length) delete plan.buyLivestock;
   if (!Object.keys(plan.sellLivestock).length) delete plan.sellLivestock;
@@ -492,7 +522,7 @@ let pendingEnd = null;
 // ---------------------------------------------------------------------------
 
 function onClick(e) {
-  const t = e.target.closest('[data-act],[data-tab],[data-map],[data-quarter],[data-choice],' +
+  const t = e.target.closest('[data-act],[data-tab],[data-map],[data-quarter],[data-choice],[data-life],' +
     '[data-bg],[data-diff],[data-buy-equip],[data-buy-stock],[data-sell-stock],' +
     '[data-buy-land],[data-file],[data-tech],[data-will],[data-program],[data-road]');
   if (!t) return;
@@ -526,6 +556,13 @@ function onClick(e) {
 
   if (t.dataset.choice) {
     draft.choiceResponse[t.dataset.choice] = t.dataset.option;
+    modal = null;
+    workYear();
+    return;
+  }
+
+  if (t.dataset.life) {
+    draft.lifeChoices[t.dataset.life] = t.dataset.option;
     modal = null;
     workYear();
     return;
