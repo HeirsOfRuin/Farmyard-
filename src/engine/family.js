@@ -10,36 +10,15 @@
 // the city. Those are different games and the same farm.
 
 import { namePool, surnamePool } from '../data/names.data.js';
+import { TRAITS, TRAIT_IDS, POSITIVE_TRAITS, traitEffect } from '../data/traits.data.js';
 
-export const TRAITS = {
-  shrewd: { id: 'shrewd', name: 'Shrewd', effect: { marketing: 1.08 },
-    note: 'Reads the market. Sells into strength and does not panic into a low.' },
-  cautious: { id: 'cautious', name: 'Cautious', effect: { borrowWillingness: 0.65, crisisResist: 1.15 },
-    note: 'Slow to borrow. Looks foolish in a boom and is still farming after the bust.' },
-  mechanical: { id: 'mechanical', name: 'Mechanical', effect: { wearRate: 0.7, breakdownRisk: 0.55 },
-    note: 'Keeps machinery running and fixes it in the field rather than waiting on town.' },
-  stockman: { id: 'stockman', name: 'Stockman', effect: { livestockYield: 1.15, livestockMortality: 0.7 },
-    note: 'Good with animals. The herd does better and loses fewer.' },
-  hardworking: { id: 'hardworking', name: 'Hard-working', effect: { labour: 1.15 },
-    note: 'Gets more done in a day than the day should hold.' },
-  thrifty: { id: 'thrifty', name: 'Thrifty', effect: { livingCost: 0.85 },
-    note: 'Nothing is thrown out and nothing is bought that could be made.' },
-  literate: { id: 'literate', name: 'Educated', effect: { techAdoption: 1.25 },
-    note: 'Reads the bulletins and the extension circulars, and acts on them.' },
-  communal: { id: 'communal', name: 'Well-regarded', effect: { communitySupport: 1.3 },
-    note: 'The district turns out for this family, and this family turns out for the district.' },
-  hardy: { id: 'hardy', name: 'Hardy', effect: { health: 1.15, illnessResist: 1.25 },
-    note: 'Built for this climate and this work.' },
-  frail: { id: 'frail', name: 'Frail', effect: { health: 0.8, illnessResist: 0.75 }, negative: true,
-    note: 'Never quite strong. Every hard winter takes something.' },
-  restless: { id: 'restless', name: 'Restless', effect: { stayChance: 0.5 }, negative: true,
-    note: 'Does not want the farm. Wants somewhere that is not this.' },
-  stubborn: { id: 'stubborn', name: 'Stubborn', effect: { techAdoption: 0.7, crisisResist: 1.2 }, negative: true,
-    note: 'Will not change the way it is done. Will also not be moved off it.' },
-};
-
-export const TRAIT_IDS = Object.keys(TRAITS);
-const POSITIVE_TRAITS = TRAIT_IDS.filter((t) => !TRAITS[t].negative);
+// Re-exported for callers that used to import these from here. The table
+// itself now lives in src/data/traits.data.js, alongside every other numbers
+// table, so the effects-are-consumed guard (test/effects.test.js) — which
+// only scans src/data/*.data.js — can actually see it. It used to be right
+// here in the engine, invisible to its own guard, which is how eleven of
+// twelve traits' declared effects went dead without a single test noticing.
+export { TRAITS, TRAIT_IDS };
 
 /**
  * People are numbered within their own family, from a counter carried on the
@@ -142,8 +121,8 @@ export function baseMortality(a) {
 export function mortalityFor(state, m) {
   const a = age(state.year, m);
   let p = baseMortality(a) * mortalityEraFactor(state.year);
-  if (m.traits.includes('hardy')) p *= 0.8;
-  if (m.traits.includes('frail')) p *= 1.35;
+  if (m.traits.includes('hardy')) p *= traitEffect('hardy', 'mortality');
+  if (m.traits.includes('frail')) p *= traitEffect('frail', 'mortality');
   p *= 2 - Math.max(0.3, m.health); // poor health raises it
   return Math.min(0.95, p);
 }
@@ -236,8 +215,8 @@ export function advanceFamily(state, rng) {
         year < 1970 ? 0.42 :
         year < 1990 ? 0.32 : 0.28;
       let p = eraStay;
-      if (m.traits.includes('restless')) p *= 0.5;
-      if (m.traits.includes('stubborn')) p *= 1.2;
+      if (m.traits.includes('restless')) p *= traitEffect('restless', 'stayChance');
+      if (m.traits.includes('stubborn')) p *= traitEffect('stubborn', 'stayChance');
       if (m.sex === 'female' && year < 1960) p *= 0.35; // daughters rarely inherited the operation
       if (state.difficultyDef.guaranteedHeir) p = Math.max(p, 0.85);
       m.wantsFarm = rng.chance(p);

@@ -25,7 +25,7 @@ import {
 import {
   ACRES_PER_QUARTER, playerQuarters, quarterById, workableAcres,
   breakingCostPerAcre, quarterValueFactor, roadFor, distanceFromYard,
-  settledBrokenAcres, maxBrokenAcres,
+  settledBrokenAcres, maxBrokenAcres, forageAcres,
 } from './land.js';
 import { crop as cropDef, CROPS, cropsAvailable, WHEAT_VARIETIES } from '../data/crops.data.js';
 import { equipment as equipDef, EQUIPMENT } from '../data/equipment.data.js';
@@ -42,6 +42,7 @@ import { rollYearEvents, describeEvents } from './events.js';
 import { serviceDebt, assessSolvency, forcedLandSale, borrow, repay, creditSourcesAvailable } from './finance.js';
 import { sellGrain, livestockIncome, applySpoilage, consumeFeed, storageCapacity, interpAnchors, defaultSaleOrders } from './market.js';
 import { advanceFamily, operator, fullName, age, isAlive, heirCandidates } from './family.js';
+import { traitEffect } from '../data/traits.data.js';
 import { runSuccession, needsSuccession, writeWill, RETIREMENT_AGE } from './succession.js';
 
 export const HOMESTEAD_FEE = 10;
@@ -430,6 +431,14 @@ function phaseSpring(state, record, plan) {
     sp.actions.push(`Sold ${n} ${LIVESTOCK[id].name.toLowerCase()} for $${Math.round(each * n).toLocaleString()}.`);
   }
 
+  // How readily this operator takes up something new. Literate reads the
+  // bulletin and gets it right without an expensive false start; stubborn
+  // does the opposite. Applied as a discount or surcharge on the cash cost —
+  // it cannot force a choice that is the player's or the bot's to make, but
+  // it can make that choice cheaper or dearer to act on.
+  const techAdoptionMult = state.operatorTraits?.includes('literate') ? traitEffect('literate', 'techAdoption')
+    : state.operatorTraits?.includes('stubborn') ? traitEffect('stubborn', 'techAdoption')
+    : 1;
   for (const techId of plan.adoptTech || []) {
     const t = TECHNOLOGIES[techId];
     if (!t || state.technologies.includes(techId)) continue;
@@ -440,7 +449,8 @@ function phaseSpring(state, record, plan) {
     if (t.requiresImplement && !state.equipment.some((i) => i.type === t.requiresImplement)) {
       sp.actions.push(`${t.name} needs a ${EQUIPMENT[t.requiresImplement].name.toLowerCase()}.`); continue;
     }
-    const cost = t.cost ? inflate(t.cost / (priceIndex(t.costYear || 1875) / 100), state.year) : 0;
+    const baseCost = t.cost ? inflate(t.cost / (priceIndex(t.costYear || 1875) / 100), state.year) : 0;
+    const cost = baseCost / techAdoptionMult;
     if (state.cash < cost) { sp.actions.push(`${t.name} wanted $${Math.round(cost).toLocaleString()}.`); continue; }
     state.cash -= cost;
     state.technologies.push(techId);
@@ -609,10 +619,19 @@ function phaseSpring(state, record, plan) {
   const seedDaysAvailable = days;
   const capacity = croppableAcres(state);
 
+  // HAY IS NOT A TILLAGE CROP. It needs neither a plow nor a drill — its own
+  // `work` entry in crops.data.js carries only a harvest cost — but it was
+  // routed through this same till+seed day-budget and capped at
+  // `workableAcres(q)` (broken acres only) like grain, so a settler's first
+  // hay field, on sod that had not been and would not be broken, was assigned
+  // zero seeded acres and cut nothing. It gets its own pass below, against
+  // `forageAcres()` rather than the spring day budget: cutting standing grass
+  // costs harvest days, which the harvest phase already throttles, not spring
+  // tillage days.
   const toSeed = playerQuarters(state.quarters)
     .filter((q) => {
       const c = CROPS[q.use];
-      return c && c.seedRate >= 0 && !['idle', 'pasture', 'bush'].includes(q.use);
+      return c && c.seedRate >= 0 && !['idle', 'pasture', 'bush', 'hay'].includes(q.use);
     })
     .map((q) => ({ q, acres: workableAcres(q) }));
 
@@ -635,6 +654,14 @@ function phaseSpring(state, record, plan) {
     budget -= got;
     sp.seeded += got;
     if (got < acres - 0.5) sp.notSeeded += acres - got;
+  }
+
+  // Hay: cut wherever there is grass, broken or not. Not part of the spring
+  // day-budget loop above and not capped by workableAcres — see the comment
+  // on `toSeed`.
+  for (const q of playerQuarters(state.quarters)) {
+    if (q.use !== 'hay') continue;
+    q.seededAcres = forageAcres(q);
   }
   if (sp.notSeeded > 1) {
     record.notes.push(
@@ -1285,7 +1312,12 @@ function phaseSettle(state, record, plan) {
       const earning = Math.max(gross, recentGross);
       // Half a year's gross is a hard year carried. More than that is a debt
       // the crop cannot retire, whatever the land is worth.
-      const ceiling = Math.max(inflate(40, state.year), earning * 0.5);
+      // A cautious operator's household is slower to reach for debt even in a
+      // genuine shortfall — real, bounded, and the reason "still farming after
+      // the bust" is the trait's own note rather than its whole effect.
+      const willingness = state.operatorTraits?.includes('cautious')
+        ? traitEffect('cautious', 'borrowWillingness') : 1;
+      const ceiling = Math.max(inflate(40, state.year), earning * 0.5) * willingness;
       const want = Math.min(-state.cash * 1.15, room, ceiling);
       if (src && want > 1) {
         const r = borrow(state, { amount: want, sourceId: src.id, termYears: src.maxTerm });
@@ -1417,7 +1449,14 @@ function phaseWinter(state, record, plan) {
     // make every future harvest on this quarter NaN.
     const seeded = Number.isFinite(q.seededAcres) ? q.seededAcres : 0;
     const brokenBase = Math.max(1, q.brokenAcres || 1);
-    let delta = -(c.fertilityDraw || 0) * (seeded / brokenBase);
+    // This ratio stands for how hard CULTIVATED ground is being mined, so it
+    // is capped at one. Hay and pasture can now be seeded past brokenAcres —
+    // grass cut on ground that was never plowed — and without the cap that
+    // sent an unbroken hay quarter's fertility straight to the floor in a
+    // single year, which is backwards: wild hay does not mine soil the way
+    // tillage does, and the crop's own fertilityRestore says as much.
+    const drawRatio = Math.min(1, seeded / brokenBase);
+    let delta = -(c.fertilityDraw || 0) * drawRatio;
     if (c.fertilityRestore) delta += c.fertilityRestore;
     // Manure from the farm's own animals, and bought fertilizer.
     const stockUnits = Object.values(state.livestock).reduce((s, v) => s + v, 0);
@@ -1468,7 +1507,7 @@ function phaseWinter(state, record, plan) {
     const e = equipDef(item.type);
     const life = e.lifespanYears || 20;
     let wear = 1 / life;
-    if (mechanical) wear *= 0.7;
+    if (mechanical) wear *= traitEffect('mechanical', 'wearRate');
     const cond = item.condition ?? 1;
     // Approach the floor asymptotically; upkeep holds it there.
     item.condition = clamp(FLOOR + (cond - FLOOR) * (1 - wear * 1.6), FLOOR * 0.6, 1);
@@ -1517,12 +1556,14 @@ function phaseWinter(state, record, plan) {
 
   // --- livestock increase, bounded by what the place can carry --------------
   const stockman = state.operatorTraits?.includes('stockman');
+  const stockYieldMult = stockman ? traitEffect('stockman', 'livestockYield') : 1;
+  const stockMortalityMult = stockman ? traitEffect('stockman', 'livestockMortality') : 1;
   for (const [id, count] of Object.entries(state.livestock)) {
     if (!count) continue;
     const l = LIVESTOCK[id];
     if (!l) continue;
-    const born = Math.floor(count * l.breedRate * 0.5 * (stockman ? 1.15 : 1));
-    const died = Math.floor(count * l.mortality * (stockman ? 0.7 : 1));
+    const born = Math.floor(count * l.breedRate * 0.5 * stockYieldMult);
+    const died = Math.floor(count * l.mortality * stockMortalityMult);
     state.livestock[id] = Math.max(0, count + born - died);
   }
 

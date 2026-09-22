@@ -1216,6 +1216,28 @@ function workableAcres(q) {
   return q.brokenAcres;
 }
 
+// Slough and native grass fed the stock long before a plow ever touched a
+// quarter — "the poor settler's engine" wintered on slough hay from the
+// first year, and slough ground is explicitly called out in the regions
+// table as GOOD hay, not marginal grain land. Gating hay and pasture on
+// `brokenAcres` the way grain is gated left a settler who broke forty acres
+// of sod with nowhere to cut a ton of hay and no way to winter the oxen that
+// did the breaking — the tillage requirement that is real for grain does not
+// apply to cutting or grazing standing grass at all.
+const NATIVE_FORAGE_SHARE = 0.8;
+
+/**
+ * Acres of a quarter available for hay or pasture, whether or not it has been
+ * broken. Once ground IS broken it is at least as good for hay as it was
+ * wild — cultivated hayland out-yields native grass — so this is the GREATER
+ * of the broken acreage and the native share, not the unbroken fraction
+ * alone, and it deliberately ignores the drainage requirement `workableAcres`
+ * applies to grain: undrained slough is exactly where the best wild hay grows.
+ */
+function forageAcres(q) {
+  return Math.max(q.brokenAcres, ACRES_PER_QUARTER * NATIVE_FORAGE_SHARE);
+}
+
 /** What it costs to break one acre of native sod on this quarter, in 1875 dollars. */
 function breakingCostPerAcre(q) {
   const s = soilDef(q.soil);
@@ -1226,7 +1248,7 @@ function breakingCostPerAcre(q) {
 
 
 
-return { sectionTenure, legalDescription, generateTownship, seedNeighbours, improvedShare, croppableShare, maxBrokenAcres, settledBrokenAcres, distanceBetween, distanceFromYard, roadLevelFor, roadFor, quarterById, playerQuarters, ownedAcres, brokenAcres, croppedAcres, quarterValueFactor, workableAcres, breakingCostPerAcre, ACRES_PER_QUARTER, QUARTER_CODES, MAP_SECTIONS, MAP_COLS, MAP_ROWS, TENURE_LABEL, MILES_PER_CELL, SOILS };
+return { sectionTenure, legalDescription, generateTownship, seedNeighbours, improvedShare, croppableShare, maxBrokenAcres, settledBrokenAcres, distanceBetween, distanceFromYard, roadLevelFor, roadFor, quarterById, playerQuarters, ownedAcres, brokenAcres, croppedAcres, quarterValueFactor, workableAcres, forageAcres, breakingCostPerAcre, ACRES_PER_QUARTER, QUARTER_CODES, MAP_SECTIONS, MAP_COLS, MAP_ROWS, TENURE_LABEL, MILES_PER_CELL, NATIVE_FORAGE_SHARE, SOILS };
 })();
 
 __m["src/data/names.data.js"] = (function () {
@@ -1357,9 +1379,12 @@ const BACKGROUNDS = {
     traits: ['hardy', 'literate', 'communal'],
     creditAccess: 0.6,
     communitySupport: 1.5,
-    // Winter fishing on Lake Winnipeg was the income that carried these farms
-    // through years the land could not.
-    winterFishing: true,
+    // Winter fishing on Lake Winnipeg is not a flag on this background — it is
+    // the interlake REGION's own offFarmIncome (regions.data.js), open to
+    // whoever settles there. Declaring it again here as `winterFishing: true`
+    // read by nothing was exactly the class of promise this game keeps
+    // finding and breaking: the region assignment above is what actually
+    // gives every Icelandic settler access to it.
     note: 'The worst land and the least money. Winter fishing on the lake is what carries you until the farm can.',
   },
 };
@@ -1375,6 +1400,136 @@ function background(id) {
 return { namePool, surnamePool, background, SURNAMES, GIVEN_NAMES, BACKGROUNDS, BACKGROUND_LIST };
 })();
 
+__m["src/data/traits.data.js"] = (function () {
+// Personal traits: who a person is, in numbers the engine actually reads.
+//
+// This table used to live inside src/engine/family.js, which is exactly why
+// most of it went dead without anyone noticing: the effects-are-consumed
+// guard (test/effects.test.js) only scans src/data/*.data.js, on the working
+// theory that "the data layer" is where declared-but-unread effects hide. A
+// table of effects sitting in the engine file itself was invisible to its own
+// guard. Eleven of twelve traits' declared effects — techAdoption,
+// communitySupport, livingCost, labour, wearRate's partner breakdownRisk,
+// livestockYield's partner livestockMortality, marketing, borrowWillingness,
+// crisisResist, health, illnessResist, stayChance — were either read by
+// nothing, or read via a hand-copied number in the engine that had already
+// drifted from what this table declared (shrewd's marketing bonus was applied
+// as 1.06 here and this table said 1.08). Moving the table to the data layer
+// does not fix that by itself; every value below is now the SINGLE number the
+// engine reads, wherever it applies the trait.
+
+const TRAITS = {
+  shrewd: {
+    id: 'shrewd', name: 'Shrewd',
+    // Applied in market.js's realisedPrice(). The engine already used 1.06
+    // for this before the table and the code were reconciled — kept rather
+    // than moved to the round 1.08 the table used to claim, since 1.06 is the
+    // number every balance run to date has actually been tuned against.
+    effect: { marketing: 1.06 },
+    note: 'Reads the market. Sells into strength and does not panic into a low.',
+  },
+  cautious: {
+    id: 'cautious', name: 'Cautious',
+    // borrowWillingness scales the ceiling on automatic emergency borrowing
+    // (turn.js, the year-end shortfall); crisisResist raises the bar for a
+    // bad year to count as genuine distress (finance.js, assessSolvency).
+    effect: { borrowWillingness: 0.65, crisisResist: 1.15 },
+    note: 'Slow to borrow. Looks foolish in a boom and is still farming after the bust.',
+  },
+  mechanical: {
+    id: 'mechanical', name: 'Mechanical',
+    // wearRate slows equipment condition decay (turn.js); breakdownRisk
+    // scales how often the machinery-breakdown misfortune is drawn at all
+    // (events.js).
+    effect: { wearRate: 0.7, breakdownRisk: 0.55 },
+    note: 'Keeps machinery running and fixes it in the field rather than waiting on town.',
+  },
+  stockman: {
+    id: 'stockman', name: 'Stockman',
+    // Applied in market.js's livestockIncome() and turn.js's herd-increase
+    // block — both already read this table directly.
+    effect: { livestockYield: 1.15, livestockMortality: 0.7 },
+    note: 'Good with animals. The herd does better and loses fewer.',
+  },
+  hardworking: {
+    id: 'hardworking', name: 'Hard-working',
+    // Scales this person's own contribution in derive.js's workerUnits().
+    effect: { labour: 1.15 },
+    note: 'Gets more done in a day than the day should hold.',
+  },
+  thrifty: {
+    id: 'thrifty', name: 'Thrifty',
+    // Scales the household's living cost when the OPERATOR carries this
+    // trait (derive.js's livingCost()) — it describes how the household is
+    // run, not a private saving only this one person keeps.
+    effect: { livingCost: 0.85 },
+    note: 'Nothing is thrown out and nothing is bought that could be made.',
+  },
+  literate: {
+    id: 'literate', name: 'Educated',
+    // Discounts the cash cost of adopting a new technology (turn.js) — reads
+    // the bulletin and gets it right the first time instead of an expensive
+    // false start.
+    effect: { techAdoption: 1.25 },
+    note: 'Reads the bulletins and the extension circulars, and acts on them.',
+  },
+  communal: {
+    id: 'communal', name: 'Well-regarded',
+    // Scales how often "the neighbours turn out" is drawn at all (events.js),
+    // stacking with the background's own communitySupport figure.
+    effect: { communitySupport: 1.3 },
+    note: 'The district turns out for this family, and this family turns out for the district.',
+  },
+  hardy: {
+    id: 'hardy', name: 'Hardy',
+    // Applied directly in family.js's mortalityFor(). Declared as `health`
+    // and `illnessResist` originally, neither of which anything read; this is
+    // the number the engine has actually been applying to mortality all
+    // along, now named for what it is.
+    effect: { mortality: 0.8 },
+    note: 'Built for this climate and this work.',
+  },
+  frail: {
+    id: 'frail', name: 'Frail', negative: true,
+    effect: { mortality: 1.35 },
+    note: 'Never quite strong. Every hard winter takes something.',
+  },
+  restless: {
+    id: 'restless', name: 'Restless', negative: true,
+    // Applied in family.js's coming-of-age roll: how much less likely this
+    // person is to want the farm at all.
+    effect: { stayChance: 0.5 },
+    note: 'Does not want the farm. Wants somewhere that is not this.',
+  },
+  stubborn: {
+    id: 'stubborn', name: 'Stubborn', negative: true,
+    // stayChance is the flip side of restless's — a stubborn heir digs in
+    // rather than leaves. techAdoption and crisisResist mirror cautious and
+    // literate's, in the negative direction: slow to take up a new method,
+    // but that same refusal to be moved is a real defence in a bad year.
+    effect: { stayChance: 1.2, techAdoption: 0.7, crisisResist: 1.2 },
+    note: 'Will not change the way it is done. Will also not be moved off it.',
+  },
+};
+
+const TRAIT_IDS = Object.keys(TRAITS);
+const POSITIVE_TRAITS = TRAIT_IDS.filter((t) => !TRAITS[t].negative);
+
+function trait(id) {
+  const t = TRAITS[id];
+  if (!t) throw new Error(`Unknown trait id: ${id}`);
+  return t;
+}
+
+/** A trait's declared effect value, or `fallback` if the trait or key is absent. */
+function traitEffect(id, key, fallback = 1) {
+  const v = TRAITS[id]?.effect?.[key];
+  return v == null ? fallback : v;
+}
+
+return { trait, traitEffect, TRAITS, TRAIT_IDS, POSITIVE_TRAITS };
+})();
+
 __m["src/engine/family.js"] = (function () {
 // The family line: the people who actually own and work the place.
 //
@@ -1388,36 +1543,15 @@ __m["src/engine/family.js"] = (function () {
 // the city. Those are different games and the same farm.
 
 const { namePool, surnamePool } = __m["src/data/names.data.js"];
+const { TRAITS, TRAIT_IDS, POSITIVE_TRAITS, traitEffect } = __m["src/data/traits.data.js"];
 
-const TRAITS = {
-  shrewd: { id: 'shrewd', name: 'Shrewd', effect: { marketing: 1.08 },
-    note: 'Reads the market. Sells into strength and does not panic into a low.' },
-  cautious: { id: 'cautious', name: 'Cautious', effect: { borrowWillingness: 0.65, crisisResist: 1.15 },
-    note: 'Slow to borrow. Looks foolish in a boom and is still farming after the bust.' },
-  mechanical: { id: 'mechanical', name: 'Mechanical', effect: { wearRate: 0.7, breakdownRisk: 0.55 },
-    note: 'Keeps machinery running and fixes it in the field rather than waiting on town.' },
-  stockman: { id: 'stockman', name: 'Stockman', effect: { livestockYield: 1.15, livestockMortality: 0.7 },
-    note: 'Good with animals. The herd does better and loses fewer.' },
-  hardworking: { id: 'hardworking', name: 'Hard-working', effect: { labour: 1.15 },
-    note: 'Gets more done in a day than the day should hold.' },
-  thrifty: { id: 'thrifty', name: 'Thrifty', effect: { livingCost: 0.85 },
-    note: 'Nothing is thrown out and nothing is bought that could be made.' },
-  literate: { id: 'literate', name: 'Educated', effect: { techAdoption: 1.25 },
-    note: 'Reads the bulletins and the extension circulars, and acts on them.' },
-  communal: { id: 'communal', name: 'Well-regarded', effect: { communitySupport: 1.3 },
-    note: 'The district turns out for this family, and this family turns out for the district.' },
-  hardy: { id: 'hardy', name: 'Hardy', effect: { health: 1.15, illnessResist: 1.25 },
-    note: 'Built for this climate and this work.' },
-  frail: { id: 'frail', name: 'Frail', effect: { health: 0.8, illnessResist: 0.75 }, negative: true,
-    note: 'Never quite strong. Every hard winter takes something.' },
-  restless: { id: 'restless', name: 'Restless', effect: { stayChance: 0.5 }, negative: true,
-    note: 'Does not want the farm. Wants somewhere that is not this.' },
-  stubborn: { id: 'stubborn', name: 'Stubborn', effect: { techAdoption: 0.7, crisisResist: 1.2 }, negative: true,
-    note: 'Will not change the way it is done. Will also not be moved off it.' },
-};
+// Re-exported for callers that used to import these from here. The table
+// itself now lives in src/data/traits.data.js, alongside every other numbers
+// table, so the effects-are-consumed guard (test/effects.test.js) — which
+// only scans src/data/*.data.js — can actually see it. It used to be right
+// here in the engine, invisible to its own guard, which is how eleven of
+// twelve traits' declared effects went dead without a single test noticing.
 
-const TRAIT_IDS = Object.keys(TRAITS);
-const POSITIVE_TRAITS = TRAIT_IDS.filter((t) => !TRAITS[t].negative);
 
 /**
  * People are numbered within their own family, from a counter carried on the
@@ -1520,8 +1654,8 @@ function baseMortality(a) {
 function mortalityFor(state, m) {
   const a = age(state.year, m);
   let p = baseMortality(a) * mortalityEraFactor(state.year);
-  if (m.traits.includes('hardy')) p *= 0.8;
-  if (m.traits.includes('frail')) p *= 1.35;
+  if (m.traits.includes('hardy')) p *= traitEffect('hardy', 'mortality');
+  if (m.traits.includes('frail')) p *= traitEffect('frail', 'mortality');
   p *= 2 - Math.max(0.3, m.health); // poor health raises it
   return Math.min(0.95, p);
 }
@@ -1614,8 +1748,8 @@ function advanceFamily(state, rng) {
         year < 1970 ? 0.42 :
         year < 1990 ? 0.32 : 0.28;
       let p = eraStay;
-      if (m.traits.includes('restless')) p *= 0.5;
-      if (m.traits.includes('stubborn')) p *= 1.2;
+      if (m.traits.includes('restless')) p *= traitEffect('restless', 'stayChance');
+      if (m.traits.includes('stubborn')) p *= traitEffect('stubborn', 'stayChance');
       if (m.sex === 'female' && year < 1960) p *= 0.35; // daughters rarely inherited the operation
       if (state.difficultyDef.guaranteedHeir) p = Math.max(p, 0.85);
       m.wantsFarm = rng.chance(p);
@@ -3491,7 +3625,8 @@ const { equipment: equipDef } = __m["src/data/equipment.data.js"];
 const { livestock: stockDef, LIVESTOCK } = __m["src/data/livestock.data.js"];
 const { TECHNOLOGIES } = __m["src/data/tech.data.js"];
 const { difficulty: diffDef } = __m["src/data/difficulty.data.js"];
-const { ACRES_PER_QUARTER, playerQuarters, quarterValueFactor, workableAcres, distanceFromYard, roadFor } = __m["src/engine/land.js"];
+const { traitEffect } = __m["src/data/traits.data.js"];
+const { ACRES_PER_QUARTER, playerQuarters, quarterValueFactor, workableAcres, distanceFromYard, roadFor, forageAcres } = __m["src/engine/land.js"];
 const { ROAD_SPEED, ON_FOOT_MPH, TRAVEL_HOURS_PER_DAY, TRIPS_SPRING, TRIPS_HARVEST, TRANSPORT_PENALTY, ROAD_CLASSES, HAUL_SHARE_IN_HARVEST } = __m["src/data/roads.data.js"];
 const { landPrice, cropPrice, interestRate, livingCostPerAdult, inflate, inflateWage, freightRate, priceIndex, propertyTaxRate } = __m["src/data/prices.data.js"];
 
@@ -3804,6 +3939,9 @@ function workerUnits(year, m) {
   else u = 0.2;
   u *= clamp(m.health ?? 1, 0.2, 1);
   if (m.injuredUntil && year <= m.injuredUntil) u *= 0.35;
+  // A person's own trait, not the farm's — this is what "hard-working" means
+  // and it used to mean nothing at all.
+  if (m.traits?.includes('hardworking')) u *= traitEffect('hardworking', 'labour');
   return u;
 }
 
@@ -4221,7 +4359,12 @@ function livestockUnits(state) {
 function grazingCapacity(state) {
   let acres = 0;
   for (const q of playerQuarters(state.quarters)) {
-    if (q.use === 'pasture') acres += workableAcres(q) || ACRES_PER_QUARTER * 0.8;
+    // `||` here used to mean "the native-grass fallback only counts when
+    // NOTHING is broken" — the moment a single acre of a pasture quarter got
+    // broken, workableAcres(q) returned that small nonzero number and the
+    // fallback vanished, collapsing a 128-acre pasture to one grazeable acre.
+    // forageAcres() takes the greater of the two, which is what was meant.
+    if (q.use === 'pasture') acres += forageAcres(q);
   }
   // Roughly two acres of prairie pasture per animal unit for a season, more
   // where there is water to carry them — a drilled well and later a powered
@@ -4338,6 +4481,14 @@ function creditLimit(state) {
   // why taking it is a decision rather than an obvious yes.
   if (state.creditPenaltyUntil && state.year <= state.creditPenaltyUntil) {
     ease *= 0.55;
+  }
+  // The Waisenamt lent within the community on its own footing, and did not
+  // freeze up when outside credit did. It is not a bigger credit line in
+  // ordinary years — `mutualAid` backgrounds carry a LOWER base creditAccess
+  // already, reflecting harder access to banks — it is a floor that holds
+  // when everyone else's credit is drying up around them.
+  if (state.backgroundDef?.mutualAid && ease < 0.85) {
+    ease = Math.max(ease, 0.85);
   }
   const limit = security * diff.maxLoanToValue * ease;
   return Math.max(0, limit - totalDebt(state));
@@ -5505,6 +5656,7 @@ __m["src/engine/events.js"] = (function () {
 
 const { EVENTS, eventsFor, EVENT_SCOPES } = __m["src/data/events.data.js"];
 const { neutralConditions, clamp, techEffect } = __m["src/engine/derive.js"];
+const { traitEffect } = __m["src/data/traits.data.js"];
 const { playerQuarters } = __m["src/engine/land.js"];
 const { inflate } = __m["src/data/prices.data.js"];
 
@@ -5529,11 +5681,28 @@ function rollYearEvents(state, rng, { forced = [], severityOverride = null } = {
   // the whole table, and leaving them at full weight through the thirties was
   // most of why the dust bowl kept returning twenty bushels an acre.
   const goodMult = state.modifiers?.beneficialMult ?? 1;
-  const pool = eventsFor(state.year).map((e) => ({
-    ...e,
-    weight: (e.weight || 0) * (regionWeights[e.tag] ?? 1) *
-      (e.beneficial ? goodMult : diff.hazardFrequency * (tagMult[e.tag] ?? 1)),
-  }));
+
+  // Two traits that act on a single tag rather than the whole table. A
+  // mechanical operator does not eliminate breakdowns, they draw the event
+  // less often; a well-regarded family, on top of whatever their background's
+  // own standing in the district is worth, has the neighbours turn out more.
+  const mechanical = state.operatorTraits?.includes('mechanical');
+  const breakdownMult = mechanical ? traitEffect('mechanical', 'breakdownRisk') : 1;
+  const communal = state.operatorTraits?.includes('communal');
+  const communityMult = (communal ? traitEffect('communal', 'communitySupport') : 1) *
+    (state.backgroundDef?.communitySupport ?? 1);
+
+  const pool = eventsFor(state.year).map((e) => {
+    let weight = (e.weight || 0) * (regionWeights[e.tag] ?? 1);
+    if (e.beneficial) {
+      weight *= goodMult;
+      if (e.tag === 'community') weight *= communityMult;
+    } else {
+      weight *= diff.hazardFrequency * (tagMult[e.tag] ?? 1);
+      if (e.tag === 'machinery') weight *= breakdownMult;
+    }
+    return { ...e, weight };
+  });
 
   // How many things happen to a farm in a year.
   //
@@ -5675,6 +5844,7 @@ __m["src/engine/finance.js"] = (function () {
 
 const { borrowingRate, creditLimit, totalDebt, netWorth, landValue, equipmentValue, debtService } = __m["src/engine/derive.js"];
 const { playerQuarters, quarterValueFactor, ACRES_PER_QUARTER } = __m["src/engine/land.js"];
+const { traitEffect } = __m["src/data/traits.data.js"];
 const { landPrice, inflate } = __m["src/data/prices.data.js"];
 
 /**
@@ -5846,7 +6016,15 @@ function assessSolvency(state, { unpaidInterest = 0, soldUnderDuress = 0 } = {})
   // and half of all farms were gone by 1887.
   const material = debt > Math.max(0, worth) * 0.15;
 
-  const couldNotPay = material && interestDue > 0 && unpaidInterest > interestDue * 0.35;
+  // A cautious or stubborn operator's household absorbs a harder knock before
+  // a rough year counts as genuine distress — not because the arithmetic is
+  // different, but because the belt gets tightened somewhere else first.
+  // "Still farming after the bust" and "will not be moved off it" are both
+  // this same number, from two different traits' own notes.
+  const crisisResist = state.operatorTraits?.includes('cautious') ? traitEffect('cautious', 'crisisResist')
+    : state.operatorTraits?.includes('stubborn') ? traitEffect('stubborn', 'crisisResist')
+    : 1;
+  const couldNotPay = material && interestDue > 0 && unpaidInterest > interestDue * 0.35 * crisisResist;
   const soldToSurvive = soldUnderDuress > 0;
   const underwater = worth < 0;
 
@@ -5939,6 +6117,7 @@ const { cropPrice, freightRate, inflate } = __m["src/data/prices.data.js"];
 const { LIVESTOCK, PRODUCT_PRICING } = __m["src/data/livestock.data.js"];
 const { equipment: equipDef } = __m["src/data/equipment.data.js"];
 const { marketingCostPerBushel, clamp, techEffect } = __m["src/engine/derive.js"];
+const { traitEffect } = __m["src/data/traits.data.js"];
 
 /** Total bushels of storage on the place. */
 function storageCapacity(state) {
@@ -5993,7 +6172,7 @@ function realisedPrice(state, cropId, { gradeFactor = 1 } = {}) {
 
   // The operator's own judgement counts for something, and so does knowing what
   // the market did this morning instead of when you get to town.
-  if (state.operatorTraits?.includes('shrewd')) price *= 1.06;
+  if (state.operatorTraits?.includes('shrewd')) price *= traitEffect('shrewd', 'marketing');
   price *= 1 + techEffect(state, 'marketInfo', { mode: 'max' }) * 0.12;
 
   // The Board's initial payment at delivery is not a higher price, it is a
@@ -6053,7 +6232,7 @@ function livestockIncome(state, rng) {
     if (!l || state.year < l.from || state.year > l.to) continue;
 
     let perHead = interpAnchors(l.outputAnchors, state.year);
-    if (stockman) perHead *= 1.15;
+    if (stockman) perHead *= traitEffect('stockman', 'livestockYield');
     const productPrice = interpAnchors(PRODUCT_PRICING[l.outputUnit], state.year);
     if (!productPrice) continue;
 
@@ -6654,7 +6833,7 @@ __m["src/engine/turn.js"] = (function () {
 const { streamFor } = __m["src/engine/rng.js"];
 const { STATUS, ownedQuarters } = __m["src/engine/state.js"];
 const { yieldPerAcre, neutralConditions, seasonCapacity, springDays, harvestDays, feedRequired, grazingCapacity, livingCost, annualWage, labourForce, netWorth, totalDebt, farmSummary, bestImplement, bestBreaker, clamp, currentVariety, equipmentPrice, propertyTax, conditionFactor, creditLimit, croppableAcres, breakableAcres, weedControlLevel, carryingCapacity, livestockUnits, speciesCap, draftPower, techEffect, BASE_THRESHING_DAYS, BASE_BREAKING_DAYS } = __m["src/engine/derive.js"];
-const { ACRES_PER_QUARTER, playerQuarters, quarterById, workableAcres, breakingCostPerAcre, quarterValueFactor, roadFor, distanceFromYard, settledBrokenAcres, maxBrokenAcres } = __m["src/engine/land.js"];
+const { ACRES_PER_QUARTER, playerQuarters, quarterById, workableAcres, breakingCostPerAcre, quarterValueFactor, roadFor, distanceFromYard, settledBrokenAcres, maxBrokenAcres, forageAcres } = __m["src/engine/land.js"];
 const { crop: cropDef, CROPS, cropsAvailable, WHEAT_VARIETIES } = __m["src/data/crops.data.js"];
 const { equipment: equipDef, EQUIPMENT } = __m["src/data/equipment.data.js"];
 const { LIVESTOCK, LIVESTOCK_PRICING } = __m["src/data/livestock.data.js"];
@@ -6667,6 +6846,7 @@ const { rollYearEvents, describeEvents } = __m["src/engine/events.js"];
 const { serviceDebt, assessSolvency, forcedLandSale, borrow, repay, creditSourcesAvailable } = __m["src/engine/finance.js"];
 const { sellGrain, livestockIncome, applySpoilage, consumeFeed, storageCapacity, interpAnchors, defaultSaleOrders } = __m["src/engine/market.js"];
 const { advanceFamily, operator, fullName, age, isAlive, heirCandidates } = __m["src/engine/family.js"];
+const { traitEffect } = __m["src/data/traits.data.js"];
 const { runSuccession, needsSuccession, writeWill, RETIREMENT_AGE } = __m["src/engine/succession.js"];
 
 const HOMESTEAD_FEE = 10;
@@ -7055,6 +7235,14 @@ function phaseSpring(state, record, plan) {
     sp.actions.push(`Sold ${n} ${LIVESTOCK[id].name.toLowerCase()} for $${Math.round(each * n).toLocaleString()}.`);
   }
 
+  // How readily this operator takes up something new. Literate reads the
+  // bulletin and gets it right without an expensive false start; stubborn
+  // does the opposite. Applied as a discount or surcharge on the cash cost —
+  // it cannot force a choice that is the player's or the bot's to make, but
+  // it can make that choice cheaper or dearer to act on.
+  const techAdoptionMult = state.operatorTraits?.includes('literate') ? traitEffect('literate', 'techAdoption')
+    : state.operatorTraits?.includes('stubborn') ? traitEffect('stubborn', 'techAdoption')
+    : 1;
   for (const techId of plan.adoptTech || []) {
     const t = TECHNOLOGIES[techId];
     if (!t || state.technologies.includes(techId)) continue;
@@ -7065,7 +7253,8 @@ function phaseSpring(state, record, plan) {
     if (t.requiresImplement && !state.equipment.some((i) => i.type === t.requiresImplement)) {
       sp.actions.push(`${t.name} needs a ${EQUIPMENT[t.requiresImplement].name.toLowerCase()}.`); continue;
     }
-    const cost = t.cost ? inflate(t.cost / (priceIndex(t.costYear || 1875) / 100), state.year) : 0;
+    const baseCost = t.cost ? inflate(t.cost / (priceIndex(t.costYear || 1875) / 100), state.year) : 0;
+    const cost = baseCost / techAdoptionMult;
     if (state.cash < cost) { sp.actions.push(`${t.name} wanted $${Math.round(cost).toLocaleString()}.`); continue; }
     state.cash -= cost;
     state.technologies.push(techId);
@@ -7234,10 +7423,19 @@ function phaseSpring(state, record, plan) {
   const seedDaysAvailable = days;
   const capacity = croppableAcres(state);
 
+  // HAY IS NOT A TILLAGE CROP. It needs neither a plow nor a drill — its own
+  // `work` entry in crops.data.js carries only a harvest cost — but it was
+  // routed through this same till+seed day-budget and capped at
+  // `workableAcres(q)` (broken acres only) like grain, so a settler's first
+  // hay field, on sod that had not been and would not be broken, was assigned
+  // zero seeded acres and cut nothing. It gets its own pass below, against
+  // `forageAcres()` rather than the spring day budget: cutting standing grass
+  // costs harvest days, which the harvest phase already throttles, not spring
+  // tillage days.
   const toSeed = playerQuarters(state.quarters)
     .filter((q) => {
       const c = CROPS[q.use];
-      return c && c.seedRate >= 0 && !['idle', 'pasture', 'bush'].includes(q.use);
+      return c && c.seedRate >= 0 && !['idle', 'pasture', 'bush', 'hay'].includes(q.use);
     })
     .map((q) => ({ q, acres: workableAcres(q) }));
 
@@ -7260,6 +7458,14 @@ function phaseSpring(state, record, plan) {
     budget -= got;
     sp.seeded += got;
     if (got < acres - 0.5) sp.notSeeded += acres - got;
+  }
+
+  // Hay: cut wherever there is grass, broken or not. Not part of the spring
+  // day-budget loop above and not capped by workableAcres — see the comment
+  // on `toSeed`.
+  for (const q of playerQuarters(state.quarters)) {
+    if (q.use !== 'hay') continue;
+    q.seededAcres = forageAcres(q);
   }
   if (sp.notSeeded > 1) {
     record.notes.push(
@@ -7910,7 +8116,12 @@ function phaseSettle(state, record, plan) {
       const earning = Math.max(gross, recentGross);
       // Half a year's gross is a hard year carried. More than that is a debt
       // the crop cannot retire, whatever the land is worth.
-      const ceiling = Math.max(inflate(40, state.year), earning * 0.5);
+      // A cautious operator's household is slower to reach for debt even in a
+      // genuine shortfall — real, bounded, and the reason "still farming after
+      // the bust" is the trait's own note rather than its whole effect.
+      const willingness = state.operatorTraits?.includes('cautious')
+        ? traitEffect('cautious', 'borrowWillingness') : 1;
+      const ceiling = Math.max(inflate(40, state.year), earning * 0.5) * willingness;
       const want = Math.min(-state.cash * 1.15, room, ceiling);
       if (src && want > 1) {
         const r = borrow(state, { amount: want, sourceId: src.id, termYears: src.maxTerm });
@@ -8042,7 +8253,14 @@ function phaseWinter(state, record, plan) {
     // make every future harvest on this quarter NaN.
     const seeded = Number.isFinite(q.seededAcres) ? q.seededAcres : 0;
     const brokenBase = Math.max(1, q.brokenAcres || 1);
-    let delta = -(c.fertilityDraw || 0) * (seeded / brokenBase);
+    // This ratio stands for how hard CULTIVATED ground is being mined, so it
+    // is capped at one. Hay and pasture can now be seeded past brokenAcres —
+    // grass cut on ground that was never plowed — and without the cap that
+    // sent an unbroken hay quarter's fertility straight to the floor in a
+    // single year, which is backwards: wild hay does not mine soil the way
+    // tillage does, and the crop's own fertilityRestore says as much.
+    const drawRatio = Math.min(1, seeded / brokenBase);
+    let delta = -(c.fertilityDraw || 0) * drawRatio;
     if (c.fertilityRestore) delta += c.fertilityRestore;
     // Manure from the farm's own animals, and bought fertilizer.
     const stockUnits = Object.values(state.livestock).reduce((s, v) => s + v, 0);
@@ -8093,7 +8311,7 @@ function phaseWinter(state, record, plan) {
     const e = equipDef(item.type);
     const life = e.lifespanYears || 20;
     let wear = 1 / life;
-    if (mechanical) wear *= 0.7;
+    if (mechanical) wear *= traitEffect('mechanical', 'wearRate');
     const cond = item.condition ?? 1;
     // Approach the floor asymptotically; upkeep holds it there.
     item.condition = clamp(FLOOR + (cond - FLOOR) * (1 - wear * 1.6), FLOOR * 0.6, 1);
@@ -8142,12 +8360,14 @@ function phaseWinter(state, record, plan) {
 
   // --- livestock increase, bounded by what the place can carry --------------
   const stockman = state.operatorTraits?.includes('stockman');
+  const stockYieldMult = stockman ? traitEffect('stockman', 'livestockYield') : 1;
+  const stockMortalityMult = stockman ? traitEffect('stockman', 'livestockMortality') : 1;
   for (const [id, count] of Object.entries(state.livestock)) {
     if (!count) continue;
     const l = LIVESTOCK[id];
     if (!l) continue;
-    const born = Math.floor(count * l.breedRate * 0.5 * (stockman ? 1.15 : 1));
-    const died = Math.floor(count * l.mortality * (stockman ? 0.7 : 1));
+    const born = Math.floor(count * l.breedRate * 0.5 * stockYieldMult);
+    const died = Math.floor(count * l.mortality * stockMortalityMult);
     state.livestock[id] = Math.max(0, count + born - died);
   }
 
@@ -8732,7 +8952,7 @@ __m["src/ui/panels.js"] = (function () {
 const { farmSummary, croppableAcres, yieldPerAcre, neutralConditions, totalDebt, debtService, creditLimit, borrowingRate, livingCost, feedRequired, grazingCapacity, netWorth, landValue, equipmentValue, livestockValue, granaryValue, labourForce, draftPower, equipmentPrice, currentVariety, bestImplement, breakableAcres, seasonCapacity, fieldLogistics, timelinessFactor } = __m["src/engine/derive.js"];
 const { offeredPrograms, isEnrolled, taxReliefLabel, PROGRAM_LIST } = __m["src/engine/programs.js"];
 const { ROAD_WORKS } = __m["src/data/roads.data.js"];
-const { playerQuarters, legalDescription, ACRES_PER_QUARTER, quarterById, distanceFromYard, roadFor } = __m["src/engine/land.js"];
+const { playerQuarters, legalDescription, ACRES_PER_QUARTER, quarterById, distanceFromYard, roadFor, forageAcres } = __m["src/engine/land.js"];
 const { CROPS, cropsAvailable, WHEAT_VARIETIES } = __m["src/data/crops.data.js"];
 const { EQUIPMENT, equipmentAvailable } = __m["src/data/equipment.data.js"];
 const { TECHNOLOGIES } = __m["src/data/tech.data.js"];
@@ -8989,29 +9209,32 @@ function renderPlan(state, draft) {
 
   // --- fields ---
   out.push('<section><h3>Fields</h3>');
+  const forageOnly = available.filter((cc) => cc.category === 'forage' || cc.id === 'idle');
   if (!owned.length) {
     out.push('<div class="empty">You hold no land. File on an open quarter to start.</div>');
-  } else if (sum.acresBroken < 1) {
-    out.push(
-      '<div class="empty">Nothing is broken yet. Native prairie has to be turned before it will ' +
-        'grow a crop — set acres to break below, then come back to assign them.</div>'
-    );
   } else {
+    // Grain needs the plow, but hay does not — slough and native grass fed
+    // stock long before anything was broken, so a quarter with nothing
+    // broken on it still gets a row, just with grain off the menu. Gating the
+    // whole list on `acresBroken >= 1` used to leave a settler's first spring
+    // with nowhere to even ASK for hay, on the one quarter that had it.
     out.push('<div class="fields">');
     for (const q of owned) {
-      if (q.brokenAcres < 1) continue;
+      const broken = q.brokenAcres >= 1;
       const use = draft.fieldUse[q.id] ?? q.use;
       const c = CROPS[use];
       const expected = c?.yieldBase
         ? yieldPerAcre(state, q, use, neutralConditions())
         : 0;
+      const acresShown = c?.category === 'forage' ? Math.round(forageAcres(q)) : Math.round(q.brokenAcres);
+      const options = broken ? available : forageOnly;
       out.push(
         `<div class="field">
            <div>
              <div class="nm">${esc(legalDescription(q, state.townshipLabel))}
                <span style="display:inline-block;width:9px;height:9px;border-radius:2px;background:${USE_COLOURS[use] || '#888'};margin-left:4px"></span>
              </div>
-             <div class="meta">${Math.round(q.brokenAcres)} ac &middot; ${esc(CROPS[q.use] ? soilShort(q) : '')}
+             <div class="meta">${acresShown} ac${broken ? '' : ' unbroken'} &middot; ${esc(CROPS[q.use] ? soilShort(q) : '')}
                &middot; fertility ${pct(q.fertility)}${
                  expected > 0 ? ` &middot; expect ${expected.toFixed(1)} ${c.unit}/ac in an average year` : ''
                }${(() => {
@@ -9021,9 +9244,10 @@ function renderPlan(state, draft) {
                  return ` &middot; ${miles} mi out` +
                    (loss > 0.03 ? `, costing it ${Math.round(loss * 100)}%` : '');
                })()}</div>
+             ${!broken ? '<div class="meta" style="color:var(--ink-3)">Nothing is broken here yet — wild hay and grazing only, until it is.</div>' : ''}
            </div>
            <select data-field="${q.id}">
-             ${available
+             ${options
                .map((cc) => `<option value="${cc.id}"${cc.id === use ? ' selected' : ''}>${esc(cc.name)}</option>`)
                .join('')}
            </select>
@@ -9033,7 +9257,7 @@ function renderPlan(state, draft) {
     out.push('</div>');
     const planned = owned
       .filter((q) => q.brokenAcres >= 1)
-      .filter((q) => !['idle', 'pasture', 'bush', 'fallow'].includes(draft.fieldUse[q.id] ?? q.use))
+      .filter((q) => !['idle', 'pasture', 'hay', 'bush', 'fallow'].includes(draft.fieldUse[q.id] ?? q.use))
       .reduce((s, q) => s + q.brokenAcres, 0);
     if (planned > cap.acres + 0.5) {
       out.push(

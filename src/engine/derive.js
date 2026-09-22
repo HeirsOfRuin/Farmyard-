@@ -19,9 +19,10 @@ import { equipment as equipDef } from '../data/equipment.data.js';
 import { livestock as stockDef, LIVESTOCK } from '../data/livestock.data.js';
 import { TECHNOLOGIES } from '../data/tech.data.js';
 import { difficulty as diffDef } from '../data/difficulty.data.js';
+import { traitEffect } from '../data/traits.data.js';
 import {
   ACRES_PER_QUARTER, playerQuarters, quarterValueFactor, workableAcres,
-  distanceFromYard, roadFor,
+  distanceFromYard, roadFor, forageAcres,
 } from './land.js';
 import {
   ROAD_SPEED, ON_FOOT_MPH, TRAVEL_HOURS_PER_DAY, TRIPS_SPRING, TRIPS_HARVEST,
@@ -341,6 +342,9 @@ export function workerUnits(year, m) {
   else u = 0.2;
   u *= clamp(m.health ?? 1, 0.2, 1);
   if (m.injuredUntil && year <= m.injuredUntil) u *= 0.35;
+  // A person's own trait, not the farm's — this is what "hard-working" means
+  // and it used to mean nothing at all.
+  if (m.traits?.includes('hardworking')) u *= traitEffect('hardworking', 'labour');
   return u;
 }
 
@@ -758,7 +762,12 @@ export function livestockUnits(state) {
 export function grazingCapacity(state) {
   let acres = 0;
   for (const q of playerQuarters(state.quarters)) {
-    if (q.use === 'pasture') acres += workableAcres(q) || ACRES_PER_QUARTER * 0.8;
+    // `||` here used to mean "the native-grass fallback only counts when
+    // NOTHING is broken" — the moment a single acre of a pasture quarter got
+    // broken, workableAcres(q) returned that small nonzero number and the
+    // fallback vanished, collapsing a 128-acre pasture to one grazeable acre.
+    // forageAcres() takes the greater of the two, which is what was meant.
+    if (q.use === 'pasture') acres += forageAcres(q);
   }
   // Roughly two acres of prairie pasture per animal unit for a season, more
   // where there is water to carry them — a drilled well and later a powered
@@ -875,6 +884,14 @@ export function creditLimit(state) {
   // why taking it is a decision rather than an obvious yes.
   if (state.creditPenaltyUntil && state.year <= state.creditPenaltyUntil) {
     ease *= 0.55;
+  }
+  // The Waisenamt lent within the community on its own footing, and did not
+  // freeze up when outside credit did. It is not a bigger credit line in
+  // ordinary years — `mutualAid` backgrounds carry a LOWER base creditAccess
+  // already, reflecting harder access to banks — it is a floor that holds
+  // when everyone else's credit is drying up around them.
+  if (state.backgroundDef?.mutualAid && ease < 0.85) {
+    ease = Math.max(ease, 0.85);
   }
   const limit = security * diff.maxLoanToValue * ease;
   return Math.max(0, limit - totalDebt(state));

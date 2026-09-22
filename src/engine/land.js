@@ -323,6 +323,28 @@ export function workableAcres(q) {
   return q.brokenAcres;
 }
 
+// Slough and native grass fed the stock long before a plow ever touched a
+// quarter — "the poor settler's engine" wintered on slough hay from the
+// first year, and slough ground is explicitly called out in the regions
+// table as GOOD hay, not marginal grain land. Gating hay and pasture on
+// `brokenAcres` the way grain is gated left a settler who broke forty acres
+// of sod with nowhere to cut a ton of hay and no way to winter the oxen that
+// did the breaking — the tillage requirement that is real for grain does not
+// apply to cutting or grazing standing grass at all.
+export const NATIVE_FORAGE_SHARE = 0.8;
+
+/**
+ * Acres of a quarter available for hay or pasture, whether or not it has been
+ * broken. Once ground IS broken it is at least as good for hay as it was
+ * wild — cultivated hayland out-yields native grass — so this is the GREATER
+ * of the broken acreage and the native share, not the unbroken fraction
+ * alone, and it deliberately ignores the drainage requirement `workableAcres`
+ * applies to grain: undrained slough is exactly where the best wild hay grows.
+ */
+export function forageAcres(q) {
+  return Math.max(q.brokenAcres, ACRES_PER_QUARTER * NATIVE_FORAGE_SHARE);
+}
+
 /** What it costs to break one acre of native sod on this quarter, in 1875 dollars. */
 export function breakingCostPerAcre(q) {
   const s = soilDef(q.soil);

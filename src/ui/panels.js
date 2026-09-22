@@ -17,7 +17,7 @@ import { offeredPrograms, isEnrolled, taxReliefLabel, PROGRAM_LIST } from '../en
 import { ROAD_WORKS } from '../data/roads.data.js';
 import {
   playerQuarters, legalDescription, ACRES_PER_QUARTER, quarterById,
-  distanceFromYard, roadFor,
+  distanceFromYard, roadFor, forageAcres,
 } from '../engine/land.js';
 import { CROPS, cropsAvailable, WHEAT_VARIETIES } from '../data/crops.data.js';
 import { EQUIPMENT, equipmentAvailable } from '../data/equipment.data.js';
@@ -275,29 +275,32 @@ export function renderPlan(state, draft) {
 
   // --- fields ---
   out.push('<section><h3>Fields</h3>');
+  const forageOnly = available.filter((cc) => cc.category === 'forage' || cc.id === 'idle');
   if (!owned.length) {
     out.push('<div class="empty">You hold no land. File on an open quarter to start.</div>');
-  } else if (sum.acresBroken < 1) {
-    out.push(
-      '<div class="empty">Nothing is broken yet. Native prairie has to be turned before it will ' +
-        'grow a crop — set acres to break below, then come back to assign them.</div>'
-    );
   } else {
+    // Grain needs the plow, but hay does not — slough and native grass fed
+    // stock long before anything was broken, so a quarter with nothing
+    // broken on it still gets a row, just with grain off the menu. Gating the
+    // whole list on `acresBroken >= 1` used to leave a settler's first spring
+    // with nowhere to even ASK for hay, on the one quarter that had it.
     out.push('<div class="fields">');
     for (const q of owned) {
-      if (q.brokenAcres < 1) continue;
+      const broken = q.brokenAcres >= 1;
       const use = draft.fieldUse[q.id] ?? q.use;
       const c = CROPS[use];
       const expected = c?.yieldBase
         ? yieldPerAcre(state, q, use, neutralConditions())
         : 0;
+      const acresShown = c?.category === 'forage' ? Math.round(forageAcres(q)) : Math.round(q.brokenAcres);
+      const options = broken ? available : forageOnly;
       out.push(
         `<div class="field">
            <div>
              <div class="nm">${esc(legalDescription(q, state.townshipLabel))}
                <span style="display:inline-block;width:9px;height:9px;border-radius:2px;background:${USE_COLOURS[use] || '#888'};margin-left:4px"></span>
              </div>
-             <div class="meta">${Math.round(q.brokenAcres)} ac &middot; ${esc(CROPS[q.use] ? soilShort(q) : '')}
+             <div class="meta">${acresShown} ac${broken ? '' : ' unbroken'} &middot; ${esc(CROPS[q.use] ? soilShort(q) : '')}
                &middot; fertility ${pct(q.fertility)}${
                  expected > 0 ? ` &middot; expect ${expected.toFixed(1)} ${c.unit}/ac in an average year` : ''
                }${(() => {
@@ -307,9 +310,10 @@ export function renderPlan(state, draft) {
                  return ` &middot; ${miles} mi out` +
                    (loss > 0.03 ? `, costing it ${Math.round(loss * 100)}%` : '');
                })()}</div>
+             ${!broken ? '<div class="meta" style="color:var(--ink-3)">Nothing is broken here yet — wild hay and grazing only, until it is.</div>' : ''}
            </div>
            <select data-field="${q.id}">
-             ${available
+             ${options
                .map((cc) => `<option value="${cc.id}"${cc.id === use ? ' selected' : ''}>${esc(cc.name)}</option>`)
                .join('')}
            </select>
@@ -319,7 +323,7 @@ export function renderPlan(state, draft) {
     out.push('</div>');
     const planned = owned
       .filter((q) => q.brokenAcres >= 1)
-      .filter((q) => !['idle', 'pasture', 'bush', 'fallow'].includes(draft.fieldUse[q.id] ?? q.use))
+      .filter((q) => !['idle', 'pasture', 'hay', 'bush', 'fallow'].includes(draft.fieldUse[q.id] ?? q.use))
       .reduce((s, q) => s + q.brokenAcres, 0);
     if (planned > cap.acres + 0.5) {
       out.push(

@@ -125,9 +125,12 @@ export const BACKGROUNDS = {
     traits: ['hardy', 'literate', 'communal'],
     creditAccess: 0.6,
     communitySupport: 1.5,
-    // Winter fishing on Lake Winnipeg was the income that carried these farms
-    // through years the land could not.
-    winterFishing: true,
+    // Winter fishing on Lake Winnipeg is not a flag on this background — it is
+    // the interlake REGION's own offFarmIncome (regions.data.js), open to
+    // whoever settles there. Declaring it again here as `winterFishing: true`
+    // read by nothing was exactly the class of promise this game keeps
+    // finding and breaking: the region assignment above is what actually
+    // gives every Icelandic settler access to it.
     note: 'The worst land and the least money. Winter fishing on the lake is what carries you until the farm can.',
   },
 };

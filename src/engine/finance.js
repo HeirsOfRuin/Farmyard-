@@ -11,6 +11,7 @@ import {
   borrowingRate, creditLimit, totalDebt, netWorth, landValue, equipmentValue, debtService,
 } from './derive.js';
 import { playerQuarters, quarterValueFactor, ACRES_PER_QUARTER } from './land.js';
+import { traitEffect } from '../data/traits.data.js';
 import { landPrice, inflate } from '../data/prices.data.js';
 
 /**
@@ -182,7 +183,15 @@ export function assessSolvency(state, { unpaidInterest = 0, soldUnderDuress = 0 
   // and half of all farms were gone by 1887.
   const material = debt > Math.max(0, worth) * 0.15;
 
-  const couldNotPay = material && interestDue > 0 && unpaidInterest > interestDue * 0.35;
+  // A cautious or stubborn operator's household absorbs a harder knock before
+  // a rough year counts as genuine distress — not because the arithmetic is
+  // different, but because the belt gets tightened somewhere else first.
+  // "Still farming after the bust" and "will not be moved off it" are both
+  // this same number, from two different traits' own notes.
+  const crisisResist = state.operatorTraits?.includes('cautious') ? traitEffect('cautious', 'crisisResist')
+    : state.operatorTraits?.includes('stubborn') ? traitEffect('stubborn', 'crisisResist')
+    : 1;
+  const couldNotPay = material && interestDue > 0 && unpaidInterest > interestDue * 0.35 * crisisResist;
   const soldToSurvive = soldUnderDuress > 0;
   const underwater = worth < 0;
 

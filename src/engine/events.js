@@ -7,6 +7,7 @@
 
 import { EVENTS, eventsFor, EVENT_SCOPES } from '../data/events.data.js';
 import { neutralConditions, clamp, techEffect } from './derive.js';
+import { traitEffect } from '../data/traits.data.js';
 import { playerQuarters } from './land.js';
 import { inflate } from '../data/prices.data.js';
 
@@ -31,11 +32,28 @@ export function rollYearEvents(state, rng, { forced = [], severityOverride = nul
   // the whole table, and leaving them at full weight through the thirties was
   // most of why the dust bowl kept returning twenty bushels an acre.
   const goodMult = state.modifiers?.beneficialMult ?? 1;
-  const pool = eventsFor(state.year).map((e) => ({
-    ...e,
-    weight: (e.weight || 0) * (regionWeights[e.tag] ?? 1) *
-      (e.beneficial ? goodMult : diff.hazardFrequency * (tagMult[e.tag] ?? 1)),
-  }));
+
+  // Two traits that act on a single tag rather than the whole table. A
+  // mechanical operator does not eliminate breakdowns, they draw the event
+  // less often; a well-regarded family, on top of whatever their background's
+  // own standing in the district is worth, has the neighbours turn out more.
+  const mechanical = state.operatorTraits?.includes('mechanical');
+  const breakdownMult = mechanical ? traitEffect('mechanical', 'breakdownRisk') : 1;
+  const communal = state.operatorTraits?.includes('communal');
+  const communityMult = (communal ? traitEffect('communal', 'communitySupport') : 1) *
+    (state.backgroundDef?.communitySupport ?? 1);
+
+  const pool = eventsFor(state.year).map((e) => {
+    let weight = (e.weight || 0) * (regionWeights[e.tag] ?? 1);
+    if (e.beneficial) {
+      weight *= goodMult;
+      if (e.tag === 'community') weight *= communityMult;
+    } else {
+      weight *= diff.hazardFrequency * (tagMult[e.tag] ?? 1);
+      if (e.tag === 'machinery') weight *= breakdownMult;
+    }
+    return { ...e, weight };
+  });
 
   // How many things happen to a farm in a year.
   //

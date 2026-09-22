@@ -11,6 +11,7 @@ import { cropPrice, freightRate, inflate } from '../data/prices.data.js';
 import { LIVESTOCK, PRODUCT_PRICING } from '../data/livestock.data.js';
 import { equipment as equipDef } from '../data/equipment.data.js';
 import { marketingCostPerBushel, clamp, techEffect } from './derive.js';
+import { traitEffect } from '../data/traits.data.js';
 
 /** Total bushels of storage on the place. */
 export function storageCapacity(state) {
@@ -65,7 +66,7 @@ export function realisedPrice(state, cropId, { gradeFactor = 1 } = {}) {
 
   // The operator's own judgement counts for something, and so does knowing what
   // the market did this morning instead of when you get to town.
-  if (state.operatorTraits?.includes('shrewd')) price *= 1.06;
+  if (state.operatorTraits?.includes('shrewd')) price *= traitEffect('shrewd', 'marketing');
   price *= 1 + techEffect(state, 'marketInfo', { mode: 'max' }) * 0.12;
 
   // The Board's initial payment at delivery is not a higher price, it is a
@@ -125,7 +126,7 @@ export function livestockIncome(state, rng) {
     if (!l || state.year < l.from || state.year > l.to) continue;
 
     let perHead = interpAnchors(l.outputAnchors, state.year);
-    if (stockman) perHead *= 1.15;
+    if (stockman) perHead *= traitEffect('stockman', 'livestockYield');
     const productPrice = interpAnchors(PRODUCT_PRICING[l.outputUnit], state.year);
     if (!productPrice) continue;
 

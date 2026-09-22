@@ -17,7 +17,7 @@ import {
   livingCost, debtService, carryingCapacity, livestockUnits, breakableAcres, annualWage,
   techEffect, timelinessFactor, BASE_SPRING_DAYS, BASE_HARVEST_DAYS,
 } from '../src/engine/derive.js';
-import { playerQuarters, ACRES_PER_QUARTER, quarterById, maxBrokenAcres } from '../src/engine/land.js';
+import { playerQuarters, ACRES_PER_QUARTER, quarterById, maxBrokenAcres, forageAcres } from '../src/engine/land.js';
 import { cropsAvailable, CROPS, WHEAT_VARIETIES } from '../src/data/crops.data.js';
 import { cropPrice, inflate, priceIndex } from '../src/data/prices.data.js';
 import { EQUIPMENT, equipmentAvailable } from '../src/data/equipment.data.js';
@@ -507,8 +507,17 @@ function chooseRotation(state, owned, opts = {}) {
   // with no grain to sell for five years running.
   const feed = feedRequired(state);
   const hayYield = 1.4;
-  let hayAcres = Math.min(feed.hay / hayYield, totalAcres * 0.3);
-  if (hayAcres < 1 && feed.hay > 0) hayAcres = Math.min(4, totalAcres * 0.25);
+  const hayNeeded = feed.hay / hayYield;
+  // Scaled against totalAcres so a big farm's hay quota does not eat all its
+  // cropland — but totalAcres is broken acreage, and a brand-new homestead has
+  // none. Capping hay need at totalAcres*0.3 made it zero in the farm's first
+  // year regardless of how much feed the oxen and chickens actually needed,
+  // which is the same bug from the other side: the bot never asked for hay
+  // ground until it already had crop ground to compare it against.
+  let hayAcres = totalAcres > 0 ? Math.min(hayNeeded, totalAcres * 0.3) : hayNeeded;
+  if (hayAcres < 1 && feed.hay > 0) {
+    hayAcres = totalAcres > 0 ? Math.min(4, totalAcres * 0.25) : Math.min(4, hayNeeded);
+  }
 
   let cashCrop = 'wheat';
   if (!opts.noDiversify && available.has('canola') && hasSwather) cashCrop = 'canola';
@@ -534,7 +543,20 @@ function chooseRotation(state, owned, opts = {}) {
   );
 
   for (const q of byDistance) {
-    if (q.brokenAcres < 1) { use[q.id] = 'idle'; continue; }
+    if (q.brokenAcres < 1) {
+      // Unbroken ground still grows grass. A settler cut wild hay off the
+      // yard quarter the same summer a strip of it went under the plow for
+      // next year's wheat — the two are not in competition, since breaking
+      // is its own pass later in the season regardless of this year's `use`.
+      if (hayLeft > 0) {
+        use[q.id] = 'hay';
+        hayLeft -= forageAcres(q);
+      } else {
+        use[q.id] = 'idle';
+      }
+      i++;
+      continue;
+    }
     let pick;
 
     // Far ground that loses a lot to distance goes to grass rather than grain.
