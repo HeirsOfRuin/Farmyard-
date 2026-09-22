@@ -168,6 +168,14 @@ line.secline { stroke: var(--rule-strong); stroke-width: 1.6; }
 .legend i { display: inline-block; width: 11px; height: 11px; border-radius: 2px; margin-right: 4px;
   vertical-align: -1px; border: 1px solid rgba(0,0,0,.18); }
 
+/* ---------- the town vignette ---------- */
+.town-wrap {
+  margin-top: 14px; padding: 8px 10px 4px;
+  background: var(--paper-2); border: 1px solid var(--rule); border-radius: var(--radius);
+}
+svg.town { width: 100%; max-width: 300px; height: auto; display: block; }
+text.townlabel { font-family: var(--serif); font-size: 7.5px; font-style: italic; fill: var(--ink-3); }
+
 /* ---------- side panel ---------- */
 .tabs { display: flex; border-bottom: 1px solid var(--rule); background: var(--paper-3); }
 .tabs button {
@@ -8929,7 +8937,7 @@ __m["src/ui/map.js"] = (function () {
 // number it shows comes from the engine.
 
 const { MAP_SECTIONS, QUARTER_CODES, legalDescription, TENURE_LABEL, distanceFromYard, roadFor, roadLevelFor } = __m["src/engine/land.js"];
-const { timelinessFactor } = __m["src/engine/derive.js"];
+const { timelinessFactor, haulMiles: haulMilesFor } = __m["src/engine/derive.js"];
 const { ROAD_CLASSES } = __m["src/data/roads.data.js"];
 const { CROPS } = __m["src/data/crops.data.js"];
 const { SOILS } = __m["src/data/regions.data.js"];
@@ -8939,32 +8947,98 @@ const PAD = 22;
 const COLS = MAP_SECTIONS[0].length * 2;
 const ROWS = MAP_SECTIONS.length * 2;
 
-/** What each land use looks like. Earthy, and distinguishable in both themes. */
+/**
+ * What each land use looks like.
+ *
+ * Spread across real HUES, not just shades of the same brown. The first
+ * version put wheat, oats, barley and rye within about fifteen degrees of
+ * each other on the colour wheel — four crops that occupy most of every
+ * township, rendered in what was effectively one colour with noise on it.
+ * This spreads the grains from gold through rust to olive, gives the
+ * oilseeds their own real colours (flax fields genuinely read as blue from a
+ * section road), and moves the root crops toward wine and plum so nothing
+ * here is "another brown."
+ */
 const USE_COLOURS = {
-  wheat:     '#c99a3c',
-  oats:      '#c7b478',
-  barley:    '#bfa06a',
-  rye:       '#a89a5e',
-  flax:      '#6d8cae',
-  rapeseed:  '#d9bb3c',
-  canola:    '#e0c63e',
-  sunflower: '#cf8c2c',
-  sugarbeet: '#7d4a5e',
-  potato:    '#a3835c',
-  hay:       '#7d9455',
-  pasture:   '#5f7a45',
-  fallow:    '#7a6450',
-  idle:      '#8d8375',
-  bush:      '#43583c',
+  wheat:     '#c8912f', // gold — the crop most of the map is
+  oats:      '#a9a24f', // olive-gold, greener than wheat
+  barley:    '#a3652f', // rust
+  rye:       '#7d7550', // dull olive
+  flax:      '#3f6f95', // blue — this is not a rounding error, flax fields were blue
+  rapeseed:  '#d6b52a', // clear yellow
+  canola:    '#b8cc3c', // yellow-green, bred off rapeseed and reads as its own thing
+  sunflower: '#d9781f', // saturated orange
+  sugarbeet: '#7a3450', // wine
+  potato:    '#6d4d63', // plum-brown
+  hay:       '#82914b', // mown gold-green
+  pasture:   '#4c6b38', // standing grass, darker and cooler than hay
+  fallow:    '#9c8862', // worked bare ground, warm grey-tan
+  idle:      '#736c5e', // gone to weeds, cool grey-tan
+  bush:      '#2e4327', // dark forest green
 };
 
+/**
+ * Who else is on the map. This was the worse of the two palettes — five
+ * low-saturation greyish-tans that a fresh township is mostly made of, since
+ * most of it starts as company land or a neighbour's place. Real hues here:
+ * a warm sienna for a neighbour's own land, cool slate for the railway
+ * company, a deep plum for the Hudson's Bay Company sections, sage for the
+ * school lands, and the palest thing on the map for ground nobody has
+ * touched yet.
+ */
 const OWNER_COLOURS = {
-  neighbour: '#b9ad97',
-  railway:   '#9aa3ad',
-  hbc:       '#a89a9a',
-  school:    '#a5aa96',
-  vacant:    '#cdc3ae',
+  neighbour: '#a97449',
+  railway:   '#7688a0',
+  hbc:       '#5f4f74',
+  school:    '#8b9a72',
+  vacant:    '#e7dcc0',
 };
+
+/**
+ * Small pixel-art glyphs — terrain, a farmstead, the yard. Each icon is a
+ * grid of 0/1/2s; 0 is transparent, 1 and 2 are the two colours passed in.
+ * Drawn as plain <rect> squares rather than path data, on purpose: this is a
+ * game about a plat map, not an illustration, and a handful of hard-edged
+ * squares reads as a mark ON the map instead of a picture dropped onto it.
+ */
+function pixelIcon(grid, x, y, px, colours) {
+  const out = [];
+  for (let r = 0; r < grid.length; r++) {
+    for (let c = 0; c < grid[r].length; c++) {
+      const v = grid[r][c];
+      if (!v) continue;
+      out.push(`<rect x="${x + c * px}" y="${y + r * px}" width="${px}" height="${px}" fill="${colours[v - 1]}" />`);
+    }
+  }
+  return `<g pointer-events="none">${out.join('')}</g>`;
+}
+
+// One small glyph per soil, shown in the corner of every quarter regardless
+// of which colour mode is showing — soil is a fixed property of the ground,
+// not something that changes with the view. Abstract on purpose: at three
+// pixels a side there is no room for anything representational, so these are
+// texture, not pictures — furrows, grain, dune ripple, a scatter of stone,
+// open water.
+const TERRAIN_ICONS = {
+  clay:   [[0,0,0,0,0],[1,1,1,1,1],[0,0,0,0,0],[1,1,1,1,1],[0,0,0,0,0]],
+  loam:   [[0,1,0,1,0],[0,0,0,0,0],[1,0,1,0,1],[0,0,0,0,0],[0,1,0,1,0]],
+  sandy:  [[1,0,0,0,0],[0,1,0,0,0],[0,0,1,0,0],[0,0,0,1,0],[0,0,0,0,1]],
+  stony:  [[0,0,0,0,0],[0,1,1,0,0],[0,1,1,1,0],[0,0,1,1,0],[0,0,0,0,0]],
+  slough: [[0,0,0,0,0],[0,1,0,1,0],[1,0,1,0,1],[0,1,0,1,0],[0,0,0,0,0]],
+};
+const TERRAIN_ICON_COLOUR = {
+  clay: '#3f2f22', loam: '#6b4f30', sandy: '#9c803f', stony: '#5f5a4e', slough: '#2f4a40',
+};
+
+/** A small house-and-barn glyph: the working farmstead, yours or a neighbour's. */
+const FARMSTEAD_ICON = [
+  [0,0,0,1,0,0,0],
+  [0,0,1,1,1,0,0],
+  [0,1,1,1,1,1,0],
+  [0,2,2,2,2,2,0],
+  [0,2,0,0,0,2,0],
+  [0,2,2,2,2,2,0],
+];
 
 function useColour(q) {
   if (q.owner === 'player') return USE_COLOURS[q.use] || USE_COLOURS.idle;
@@ -9052,6 +9126,20 @@ function renderMap(state, { selectedId = null, mode = 'use' } = {}) {
       );
     }
 
+    // The soil glyph, top right of every quarter, in every mode — soil does
+    // not change when you switch the map's colours, so neither does this.
+    parts.push(pixelIcon(
+      TERRAIN_ICONS[q.soil] || TERRAIN_ICONS.loam, x + CELL - 19, y + 4, 3,
+      [TERRAIN_ICON_COLOUR[q.soil] || TERRAIN_ICON_COLOUR.loam]
+    ));
+
+    // A neighbour who has actually settled the place gets a small farmstead
+    // of their own — plain, one colour, so it reads as "somebody is here"
+    // without competing with the yard icon for attention.
+    if (q.owner === 'neighbour' && q.brokenAcres > 15) {
+      parts.push(pixelIcon(FARMSTEAD_ICON, x + CELL - 30, y + CELL - 30, 3.4, ['#5c4a38', '#5c4a38']));
+    }
+
     parts.push(`<text class="qlabel" x="${x + 5}" y="${y + 13}">${q.quarter} ${q.section}</text>`);
     parts.push(`<text class="qsub" x="${x + 5}" y="${y + 24}">${esc(subLabel(q, mode, state))}</text>`);
     if (mine) {
@@ -9064,15 +9152,18 @@ function renderMap(state, { selectedId = null, mode = 'use' } = {}) {
 
   parts.push(renderRoads(state));
 
-  // The yard. Everything on the farm is measured from here.
+  // The yard. Everything on the farm is measured from here — the same
+  // farmstead glyph as a neighbour's, larger and in the barn-red and
+  // whitewash this map uses nowhere else, so it is unmistakably the one
+  // that is yours.
   const home = state.quarters.find((q) => q.id === state.homeQuarterId);
   if (home) {
     const hx = PAD + home.col * CELL + CELL / 2;
     const hy = PAD + home.row * CELL + CELL / 2;
     parts.push(
       `<g pointer-events="none">` +
-        `<circle cx="${hx}" cy="${hy}" r="9" fill="#2b2119" opacity="0.85"/>` +
-        `<circle cx="${hx}" cy="${hy}" r="4" fill="#d9a441"/>` +
+        `<circle cx="${hx}" cy="${hy}" r="15" fill="#2b2119" opacity="0.22"/>` +
+        pixelIcon(FARMSTEAD_ICON, hx - 12, hy - 11, 4, ['#8f3c2c', '#f2ece0']) +
         `<title>The yard</title></g>`
     );
   }
@@ -9098,24 +9189,33 @@ function renderMap(state, { selectedId = null, mode = 'use' } = {}) {
   return parts.join('');
 }
 
-/** Shaded by how much distance costs this quarter — pale near, dark far. */
+/**
+ * Shaded by how much distance costs this quarter — green and cheap, red and
+ * dear. This reuses the same green-to-red the rest of the interface already
+ * uses for good news and bad (--good and --alarm in styles.css), so "far
+ * out" reads as a cost the moment you look at it, not just as a darker
+ * brown next to a lighter one.
+ */
 function distanceColour(state, q) {
   const loss = 1 - timelinessFactor(state, q);
   const t = Math.min(1, loss / 0.3);
-  // A wider spread than the first attempt, which put five near-identical browns
-  // next to each other and conveyed nothing.
-  const shades = ['#eae2cc', '#cfbb93', '#ad8f5f', '#856434', '#5a3f1c'];
+  const shades = ['#4a7040', '#8a9a4a', '#c8912f', '#bd6a35', '#a8341f'];
   return shades[Math.min(shades.length - 1, Math.round(t * (shades.length - 1)))];
 }
 
+/**
+ * Five real hues, not five browns: clay dark and heavy, loam the warm
+ * mid-brown "good soil" actually is, sandy pale, stony grey, slough a wet
+ * blue-green so it reads as water-adjacent ground rather than just more dirt.
+ */
 function soilColour(q) {
   return {
-    clay:   '#5d4a3a',
-    loam:   '#6b5a44',
-    sandy:  '#c2ad86',
-    stony:  '#9a978d',
-    slough: '#6a7d78',
-  }[q.soil] || '#8d8375';
+    clay:   '#3f2f22',
+    loam:   '#6b4f30',
+    sandy:  '#cbb27e',
+    stony:  '#928c7c',
+    slough: '#43665a',
+  }[q.soil] || '#736c5e';
 }
 
 function subLabel(q, mode, state) {
@@ -9177,8 +9277,8 @@ function renderLegend(state, mode = 'use') {
         : `background:${st.colour};height:${Math.max(2, st.width)}px`;
       return `<span><i style="${style};border:none;border-radius:1px"></i>${esc(c.name)}</span>`;
     });
-    items.push('<span><i style="background:#eae2cc"></i>at the yard</span>');
-    items.push('<span><i style="background:#5a3f1c"></i>far out, and it costs</span>');
+    items.push('<span><i style="background:#4a7040"></i>at the yard</span>');
+    items.push('<span><i style="background:#a8341f"></i>far out, and it costs</span>');
     return items.join('');
   }
   if (mode === 'soil') {
@@ -9203,12 +9303,74 @@ function renderLegend(state, mode = 'use') {
   return items.join('');
 }
 
+/**
+ * How the district's own town grew, in five bands. Not this township — the
+ * town is where the rail point is, which is why it is drawn as its own small
+ * scene rather than claimed as one of the sections above; a real prairie
+ * town was miles off, not the neighbour's quarter. Purely a picture: nothing
+ * here is read by the engine, and nothing in the engine feeds it beyond the
+ * year and the haul distance, which is now a real, moving number (see
+ * derive.js's haulMiles()) rather than the constant it used to silently be.
+ */
+const TOWN_ERAS = [
+  { to: 1885, buildings: ['elevator'] },
+  { to: 1905, buildings: ['elevator', 'store', 'church'] },
+  { to: 1930, buildings: ['elevator', 'elevator', 'store', 'church', 'school'] },
+  { to: 1960, buildings: ['elevator', 'elevator', 'store', 'bank', 'church', 'school', 'garage'] },
+  { to: 2000, buildings: ['elevator', 'elevator', 'elevator', 'store', 'bank', 'church', 'school', 'garage', 'rink'] },
+];
+
+const BUILDING = {
+  elevator: { w: 11, h: 46, fill: '#c8912f', cap: '#241d16' },
+  store:    { w: 17, h: 20, fill: '#8f3c2c' },
+  bank:     { w: 17, h: 24, fill: '#6b5a44' },
+  church:   { w: 13, h: 22, fill: '#e7dcc0', steeple: true },
+  school:   { w: 19, h: 20, fill: '#a3652f' },
+  garage:   { w: 17, h: 15, fill: '#7688a0' },
+  rink:     { w: 22, h: 12, fill: '#4c6b38' },
+};
+
+function townEraFor(year) {
+  return TOWN_ERAS.find((e) => year <= e.to) || TOWN_ERAS[TOWN_ERAS.length - 1];
+}
+
+/** The district's town, drawn as a small growing skyline. */
+function renderTown(state) {
+  const era = townEraFor(state.year);
+  const w = 300;
+  const h = 64;
+  const base = h - 8;
+  const parts = [`<svg class="town" viewBox="0 0 ${w} ${h}" role="img" aria-label="The town, ${era.buildings.length} building${era.buildings.length === 1 ? '' : 's'} of it">`];
+  parts.push(`<line x1="4" y1="${base}" x2="${w - 4}" y2="${base}" stroke="var(--rule-strong)" stroke-width="1.4" />`);
+
+  let x = 10;
+  for (const id of era.buildings) {
+    const b = BUILDING[id];
+    const bx = x;
+    const by = base - b.h;
+    parts.push(`<rect x="${bx}" y="${by}" width="${b.w}" height="${b.h}" fill="${b.fill}" />`);
+    if (b.cap) parts.push(`<rect x="${bx - 1}" y="${by - 3}" width="${b.w + 2}" height="4" fill="${b.cap}" />`);
+    if (b.steeple) {
+      parts.push(`<rect x="${bx + b.w / 2 - 1.5}" y="${by - 9}" width="3" height="9" fill="${b.fill}" />`);
+    }
+    x += b.w + 7;
+  }
+
+  const haul = Math.round(haulMilesFor(state));
+  parts.push(
+    `<text x="${w - 6}" y="${h - 1}" text-anchor="end" class="townlabel">` +
+      `the town, ${haul} mi off</text>`
+  );
+  parts.push('</svg>');
+  return parts.join('');
+}
+
 function esc(s) {
   return String(s ?? '').replace(/[&<>"']/g, (c) =>
     ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 }
 
-return { useColour, renderMap, renderLegend, esc, USE_COLOURS };
+return { useColour, renderMap, renderLegend, townEraFor, renderTown, esc, USE_COLOURS };
 })();
 
 __m["src/ui/format.js"] = (function () {
@@ -10268,7 +10430,7 @@ const { historyFor } = __m["src/data/history.data.js"];
 const { BACKGROUND_LIST } = __m["src/data/names.data.js"];
 const { DIFFICULTY_LIST } = __m["src/data/difficulty.data.js"];
 const { CENTENNIAL_YEAR, LAST_YEAR, FIRST_YEAR } = __m["src/data/prices.data.js"];
-const { renderMap, renderLegend, esc } = __m["src/ui/map.js"];
+const { renderMap, renderLegend, renderTown, esc } = __m["src/ui/map.js"];
 const { renderAttention, renderPlan, renderMarket, renderBooks, renderFamily } = __m["src/ui/panels.js"];
 const { money, qty } = __m["src/ui/format.js"];
 const { activeStep, ackStep, dismissTutorial, reconcileTutorial, markShown } = __m["src/ui/tutorial.js"];
@@ -10524,6 +10686,7 @@ function renderMapPane(state) {
     </div>
     ${renderMap(state, { selectedId: selectedQuarter, mode: mapMode })}
     <div class="legend">${renderLegend(state, mapMode)}</div>
+    <div class="town-wrap">${renderTown(state)}</div>
     ${selectedQuarter ? renderQuarterDetail() : ''}
     ${renderChronicle()}`;
 }

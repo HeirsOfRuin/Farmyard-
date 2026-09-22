@@ -16,7 +16,7 @@ import { historyFor } from '../data/history.data.js';
 import { BACKGROUND_LIST } from '../data/names.data.js';
 import { DIFFICULTY_LIST } from '../data/difficulty.data.js';
 import { CENTENNIAL_YEAR, LAST_YEAR, FIRST_YEAR } from '../data/prices.data.js';
-import { renderMap, renderLegend, esc } from './map.js';
+import { renderMap, renderLegend, renderTown, esc } from './map.js';
 import { renderAttention, renderPlan, renderMarket, renderBooks, renderFamily } from './panels.js';
 import { money, qty } from './format.js';
 import {
@@ -274,6 +274,7 @@ function renderMapPane(state) {
     </div>
     ${renderMap(state, { selectedId: selectedQuarter, mode: mapMode })}
     <div class="legend">${renderLegend(state, mapMode)}</div>
+    <div class="town-wrap">${renderTown(state)}</div>
     ${selectedQuarter ? renderQuarterDetail() : ''}
     ${renderChronicle()}`;
 }

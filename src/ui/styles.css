@@ -145,6 +145,14 @@ line.secline { stroke: var(--rule-strong); stroke-width: 1.6; }
 .legend i { display: inline-block; width: 11px; height: 11px; border-radius: 2px; margin-right: 4px;
   vertical-align: -1px; border: 1px solid rgba(0,0,0,.18); }
 
+/* ---------- the town vignette ---------- */
+.town-wrap {
+  margin-top: 14px; padding: 8px 10px 4px;
+  background: var(--paper-2); border: 1px solid var(--rule); border-radius: var(--radius);
+}
+svg.town { width: 100%; max-width: 300px; height: auto; display: block; }
+text.townlabel { font-family: var(--serif); font-size: 7.5px; font-style: italic; fill: var(--ink-3); }
+
 /* ---------- side panel ---------- */
 .tabs { display: flex; border-bottom: 1px solid var(--rule); background: var(--paper-3); }
 .tabs button {
