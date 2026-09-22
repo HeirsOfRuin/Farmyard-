@@ -964,10 +964,19 @@ export function annualWage(state) {
   return inflateWage(220, state.year);
 }
 
+/** How far it is to the nearest rail point this year — falls as branch lines arrive. */
+export function haulMiles(state) {
+  return (state.haulMiles ?? 14) * (state.modifiers?.haulMiles ?? 1);
+}
+
 /** What it costs to move a bushel to the elevator and onward. */
 export function marketingCostPerBushel(state) {
   const roadFactor = techEffect(state, 'haulCost', { mode: 'mult', base: 1 }) || 1;
-  const haul = inflate(0.04, state.year) * (state.haulMiles ?? 14) * 0.02 * roadFactor;
+  // haulMiles(state), not state.haulMiles directly — the district's own
+  // starting distance, discounted by whatever branch line has reached it
+  // since. Reading the raw property meant three history entries describing
+  // rail arriving never once changed what hauling a bushel cost.
+  const haul = inflate(0.04, state.year) * haulMiles(state) * 0.02 * roadFactor;
   return freightRate(state.year) * (state.modifiers?.freightMult ?? 1) + haul;
 }
 

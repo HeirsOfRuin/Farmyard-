@@ -4855,10 +4855,19 @@ function annualWage(state) {
   return inflateWage(220, state.year);
 }
 
+/** How far it is to the nearest rail point this year — falls as branch lines arrive. */
+function haulMiles(state) {
+  return (state.haulMiles ?? 14) * (state.modifiers?.haulMiles ?? 1);
+}
+
 /** What it costs to move a bushel to the elevator and onward. */
 function marketingCostPerBushel(state) {
   const roadFactor = techEffect(state, 'haulCost', { mode: 'mult', base: 1 }) || 1;
-  const haul = inflate(0.04, state.year) * (state.haulMiles ?? 14) * 0.02 * roadFactor;
+  // haulMiles(state), not state.haulMiles directly — the district's own
+  // starting distance, discounted by whatever branch line has reached it
+  // since. Reading the raw property meant three history entries describing
+  // rail arriving never once changed what hauling a bushel cost.
+  const haul = inflate(0.04, state.year) * haulMiles(state) * 0.02 * roadFactor;
   return freightRate(state.year) * (state.modifiers?.freightMult ?? 1) + haul;
 }
 
@@ -4916,7 +4925,7 @@ const LIVESTOCK_PRICE_CACHE = LIVESTOCK_PRICING;
 
 
 
-return { neutralConditions, fertilityFactor, newBreakingFactor, moistureFactor, weedControlLevel, weedFactor, techEffect, rotationFactor, varietyFactor, currentVariety, techYieldFactor, yieldPerAcre, draftPower, conditionFactor, implementsFor, bestImplement, bestBreaker, effectiveCapacity, labourForce, workingAge, workerUnits, seasonCapacity, travelSpeed, haulCapacity, transportPenalty, timelinessFactor, fieldLogistics, croppableAcres, breakableAcres, springDays, harvestDays, feedRequired, carryingCapacity, speciesCap, livestockUnits, grazingCapacity, landValue, equipmentPrice, equipmentValue, livestockValue, headPrice, granaryValue, totalDebt, debtService, propertyTax, netWorth, creditLimit, borrowingRate, livingCost, subsistenceOffset, annualWage, marketingCostPerBushel, farmSummary, BASE_SPRING_DAYS, BASE_HARVEST_DAYS, BASE_THRESHING_DAYS, HAND_METHODS, BASE_BREAKING_DAYS, clamp };
+return { neutralConditions, fertilityFactor, newBreakingFactor, moistureFactor, weedControlLevel, weedFactor, techEffect, rotationFactor, varietyFactor, currentVariety, techYieldFactor, yieldPerAcre, draftPower, conditionFactor, implementsFor, bestImplement, bestBreaker, effectiveCapacity, labourForce, workingAge, workerUnits, seasonCapacity, travelSpeed, haulCapacity, transportPenalty, timelinessFactor, fieldLogistics, croppableAcres, breakableAcres, springDays, harvestDays, feedRequired, carryingCapacity, speciesCap, livestockUnits, grazingCapacity, landValue, equipmentPrice, equipmentValue, livestockValue, headPrice, granaryValue, totalDebt, debtService, propertyTax, netWorth, creditLimit, borrowingRate, livingCost, subsistenceOffset, annualWage, haulMiles, marketingCostPerBushel, farmSummary, BASE_SPRING_DAYS, BASE_HARVEST_DAYS, BASE_THRESHING_DAYS, HAND_METHODS, BASE_BREAKING_DAYS, clamp };
 })();
 
 __m["src/data/history.data.js"] = (function () {
@@ -4938,12 +4947,18 @@ const HISTORY = [
   {
     year: 1878, id: 'pembinaBranch', title: 'Rail reaches the border',
     text: 'The Pembina branch links St. Boniface to the American line. Grain can move on steel instead of in a wagon box, if you can get it to the siding.',
-    effects: { haulMiles: -0.15 },
+    // A standing cut to how far the wagon has to go, not a one-year discount
+    // — a rail line does not un-arrive. Written as -0.15 and left at the
+    // default one-year duration, this fired for a single season and then
+    // vanished: haulMiles was permanently 14 to 33 miles for the rest of the
+    // century regardless of how much steel got built, and freight cost
+    // never once reflected it.
+    effects: { haulMiles: 0.85, permanent: true },
   },
   {
     year: 1881, id: 'cprWinnipeg', title: 'The CPR comes through',
     text: 'The Canadian Pacific main line is being pushed west out of Winnipeg. Survey stakes, section gangs, and land agents in every hotel in the province.',
-    effects: { landMult: 1.4, haulMiles: -0.3 },
+    effects: { landMult: 1.4, haulMiles: 0.7, permanent: true },
   },
   {
     year: 1882, id: 'landBoom', title: 'The Manitoba land boom',
@@ -4971,7 +4986,7 @@ const HISTORY = [
   {
     year: 1886, id: 'cprComplete', title: 'The line is through to the coast',
     text: 'The Canadian Pacific is complete and running. Manitoba wheat can reach Liverpool, and it can reach it at a price.',
-    effects: { haulMiles: -0.2 },
+    effects: { haulMiles: 0.8, permanent: true },
   },
   {
     year: 1890, id: 'elevatorRow', title: 'The elevator question',

@@ -16,12 +16,18 @@ export const HISTORY = [
   {
     year: 1878, id: 'pembinaBranch', title: 'Rail reaches the border',
     text: 'The Pembina branch links St. Boniface to the American line. Grain can move on steel instead of in a wagon box, if you can get it to the siding.',
-    effects: { haulMiles: -0.15 },
+    // A standing cut to how far the wagon has to go, not a one-year discount
+    // — a rail line does not un-arrive. Written as -0.15 and left at the
+    // default one-year duration, this fired for a single season and then
+    // vanished: haulMiles was permanently 14 to 33 miles for the rest of the
+    // century regardless of how much steel got built, and freight cost
+    // never once reflected it.
+    effects: { haulMiles: 0.85, permanent: true },
   },
   {
     year: 1881, id: 'cprWinnipeg', title: 'The CPR comes through',
     text: 'The Canadian Pacific main line is being pushed west out of Winnipeg. Survey stakes, section gangs, and land agents in every hotel in the province.',
-    effects: { landMult: 1.4, haulMiles: -0.3 },
+    effects: { landMult: 1.4, haulMiles: 0.7, permanent: true },
   },
   {
     year: 1882, id: 'landBoom', title: 'The Manitoba land boom',
@@ -49,7 +55,7 @@ export const HISTORY = [
   {
     year: 1886, id: 'cprComplete', title: 'The line is through to the coast',
     text: 'The Canadian Pacific is complete and running. Manitoba wheat can reach Liverpool, and it can reach it at a price.',
-    effects: { haulMiles: -0.2 },
+    effects: { haulMiles: 0.8, permanent: true },
   },
   {
     year: 1890, id: 'elevatorRow', title: 'The elevator question',
