@@ -1638,7 +1638,29 @@ function educationEraFor(year) {
   return EDUCATION_ERAS.find((e) => year <= e.to) || EDUCATION_ERAS[EDUCATION_ERAS.length - 1];
 }
 
-return { marriageEraFor, educationEraFor, MARRIAGE_ERAS, MARRIAGE_CHECK_AGES, EDUCATION_ERAS };
+/**
+ * How much a couple's own wishes move the odds of another child, by era.
+ * Before reliable contraception — the Pill reached Canada in 1960, and rural
+ * districts later than the cities — "not this year" barely moved the number,
+ * and it was never effective family size limiting so much as it was hoped
+ * for or endured. `hopeMult` and `avoidMult` both widen across the century as
+ * that became less true.
+ */
+const FAMILY_PLANNING_ERAS = [
+  { to: 1900, hopeMult: 1.1, avoidMult: 0.9 },
+  { to: 1930, hopeMult: 1.15, avoidMult: 0.8 },
+  { to: 1960, hopeMult: 1.2, avoidMult: 0.7 },
+  { to: Infinity, hopeMult: 1.25, avoidMult: 0.4 },
+];
+
+/** `stance` is 'hoping' | 'avoid' | anything else (neutral, the old default). */
+function familyStanceMult(year, stance) {
+  if (stance !== 'hoping' && stance !== 'avoid') return 1;
+  const era = FAMILY_PLANNING_ERAS.find((e) => year <= e.to) || FAMILY_PLANNING_ERAS[FAMILY_PLANNING_ERAS.length - 1];
+  return stance === 'hoping' ? era.hopeMult : era.avoidMult;
+}
+
+return { marriageEraFor, educationEraFor, familyStanceMult, MARRIAGE_ERAS, MARRIAGE_CHECK_AGES, EDUCATION_ERAS, FAMILY_PLANNING_ERAS };
 })();
 
 __m["src/data/crops.data.js"] = (function () {
@@ -2291,7 +2313,7 @@ __m["src/engine/family.js"] = (function () {
 
 const { namePool, surnamePool } = __m["src/data/names.data.js"];
 const { TRAITS, TRAIT_IDS, POSITIVE_TRAITS, traitEffect } = __m["src/data/traits.data.js"];
-const { marriageEraFor, MARRIAGE_CHECK_AGES, educationEraFor } = __m["src/data/life.data.js"];
+const { marriageEraFor, MARRIAGE_CHECK_AGES, educationEraFor, familyStanceMult } = __m["src/data/life.data.js"];
 const { inflate } = __m["src/data/prices.data.js"];
 
 // Re-exported for callers that used to import these from here. The table
@@ -2756,7 +2778,8 @@ function advanceFamily(state, rng, plan = {}) {
     if (!isAlive(m) || m.sex !== 'female' || !m.spouseId || m.away) continue;
     const spouse = fam.members.find((x) => x.id === m.spouseId);
     if (!spouse || !isAlive(spouse)) continue;
-    const p = birthChance(year, age(year, m));
+    const stance = plan.familyStance?.[m.id];
+    const p = birthChance(year, age(year, m)) * familyStanceMult(year, stance);
     if (!rng.chance(p)) continue;
     const child = makeCharacter(rng, {
       surname: fam.surname,
@@ -7788,7 +7811,8 @@ function phaseSpring(state, record, plan) {
     record.notes.push(
       `${Math.round(sp.notSeeded)} acres were not seeded — the outfit could work ${Math.round(maxAcres)} acres ` +
         `in ${Math.round(seedDaysAvailable)} days and there were ${Math.round(wantedAcres)} to do. ` +
-        `The ${capacity.bottleneck} is what is holding the farm back.`
+        `The ${capacity.bottleneck} is what is holding the farm back, not the fields set to hay or pasture — ` +
+        `those cost harvest days, not these.`
     );
   }
 
@@ -8036,15 +8060,23 @@ function phaseHarvest(state, record, plan) {
 
   // Threshing: before the combine, cutting and threshing were separate jobs,
   // and the separator (or a hired crew) was its own constraint.
+  //
+  // GRAIN AND OILSEED ONLY. Hay is cut and stacked, not threshed — there is
+  // no straw to separate grain from — and potatoes and sugar beets are dug.
+  // `totalAcres - lost` used to mean "everything cut this year", hay
+  // included, so a farm that stood nothing but hay in the field still drew a
+  // custom-threshing bill, and a farm that could not pay it "spoiled in the
+  // stook" hay that was never in a stook to begin with.
   const harvester = cap.implement;
   if (harvester?.needsThreshing) {
     const thresh = seasonCapacity(state, 'thresh', BASE_THRESHING_DAYS);
-    const cutAcres = totalAcres - lost;
+    const grainLines = record.harvest.lines.filter((l) => ['grain', 'oilseed'].includes(CROPS[l.cropId]?.category));
+    const cutAcres = grainLines.reduce((sum, l) => sum + l.harvestedAcres, 0);
     if (thresh.acres < cutAcres) {
       const unthreshed = cutAcres - thresh.acres;
       // A custom threshing crew will do the rest, for money and their board.
       const rate = inflate(0.09, state.year);
-      const bushelsAtRisk = record.harvest.lines.reduce((s, l) => s + l.amount, 0) * (unthreshed / Math.max(1, cutAcres));
+      const bushelsAtRisk = grainLines.reduce((s, l) => s + l.amount, 0) * (unthreshed / Math.max(1, cutAcres));
       const fee = bushelsAtRisk * rate;
       if (state.cash >= fee) {
         state.cash -= fee;
@@ -8052,7 +8084,7 @@ function phaseHarvest(state, record, plan) {
         record.notes.push(`A custom threshing crew took off what the place could not — $${Math.round(fee).toLocaleString()} and their board.`);
       } else {
         // Grain that is cut but not threshed spoils in the stook.
-        for (const l of record.harvest.lines) {
+        for (const l of grainLines) {
           const spoil = l.amount * (unthreshed / Math.max(1, cutAcres)) * 0.6;
           state.granary[l.cropId] = Math.max(0, (state.granary[l.cropId] || 0) - spoil);
           l.amount -= spoil;
@@ -9429,7 +9461,7 @@ const { EQUIPMENT, equipmentAvailable } = __m["src/data/equipment.data.js"];
 const { TECHNOLOGIES } = __m["src/data/tech.data.js"];
 const { LIVESTOCK, LIVESTOCK_PRICING } = __m["src/data/livestock.data.js"];
 const { cropPrice, FIRST_YEAR } = __m["src/data/prices.data.js"];
-const { operator, age, fullName, heirCandidates, TRAITS, isAlive } = __m["src/engine/family.js"];
+const { operator, age, fullName, heirCandidates, TRAITS, isAlive, birthChance } = __m["src/engine/family.js"];
 const { storageCapacity, interpAnchors } = __m["src/engine/market.js"];
 const { quarterPurchasePrice } = __m["src/engine/turn.js"];
 const { esc, USE_COLOURS } = __m["src/ui/map.js"];
@@ -9648,6 +9680,13 @@ function renderPlan(state, draft) {
   const breakable = breakableAcres(state);
   out.push(row('Acres the outfit can crop', `${Math.round(cap.acres)} ac`));
   out.push(row('Limited by', cap.bottleneck));
+  out.push(
+    `<div style="font-size:.76rem;color:var(--ink-3);margin:-2px 0 6px">` +
+      `${cap.bottleneck === 'tillage' ? 'A faster plow or a team that can pull a bigger one raises this.'
+        : cap.bottleneck === 'seeding' ? 'A drill, or a better one, raises this.'
+        : 'A faster binder or combine raises this.'} ` +
+      `Hay and pasture do not draw on it at all — only grain competes for these days.</div>`
+  );
   out.push(row('Sod it can break', `${Math.round(breakable.acres)} ac`));
   out.push(`<div class="row"><span class="k">Working with</span></div>
             <div style="font-size:.8rem;color:var(--ink-2);margin:-2px 0 6px">${implementSummary(state)}</div>`);
@@ -9803,28 +9842,84 @@ function implementSummary(state) {
 // Market / buy panel
 // ---------------------------------------------------------------------------
 
+/**
+ * What the draft has already committed to spend, in plain summed prices —
+ * not a simulation of the order the engine settles purchases in (land, then
+ * equipment, then stock — see phaseSpring in turn.js), just the total. That
+ * is a real gap this leaves: if the total fits but the ORDER does not (the
+ * engine pays for land first and something later in the list comes up
+ * short), the shortfall still only shows up in the year's notes. What this
+ * DOES fix is the common case — queuing more than the farm has, with no way
+ * to see that before the year runs, which is what "wonky, does not tell you
+ * if it worked" actually was.
+ */
+function draftSpend(state, draft) {
+  let committed = 0;
+  for (const b of draft.buyEquipment || []) {
+    const def = EQUIPMENT[b.type];
+    if (def) committed += equipmentPrice(state, def) * (b.count || 1);
+  }
+  for (const [id, count] of Object.entries(draft.buyLivestock || {})) {
+    if (!count) continue;
+    committed += interpAnchors(LIVESTOCK_PRICING[id], state.year) * count;
+  }
+  for (const qid of draft.buyLand || []) {
+    const q = quarterById(state.quarters, qid);
+    if (q) committed += quarterPurchasePrice(state, q);
+  }
+  if (draft.fileHomestead) committed += 10;
+  return { committed, cash: state.cash, over: committed - state.cash };
+}
+
 function renderMarket(state, draft) {
   const out = [];
-  const cash = state.cash;
+  const spend = draftSpend(state, draft);
+  // What is left to spend, given what is already queued — this is what the
+  // "too dear" checks below compare against, not the raw account balance, so
+  // a second order does not show as affordable against money the first order
+  // already spoken for.
+  const cash = state.cash - spend.committed;
+  out.push(
+    `<div class="row" style="margin-bottom:10px${spend.over > 0.5 ? ';color:var(--alarm)' : ''}">` +
+      `<span class="k">Ordered so far this year</span>` +
+      `<span class="v">${money(spend.committed)} of ${money(spend.cash)} in hand</span></div>`
+  );
+  if (spend.over > 0.5) {
+    out.push(
+      `<div class="empty" style="border-color:var(--alarm);color:var(--alarm);margin-bottom:10px">` +
+        `That is $${Math.round(spend.over).toLocaleString()} more than the account holds. ` +
+        `The engine pays land, then machinery, then stock, in that order — something on this list ` +
+        `will not go through unless something else comes off it.</div>`
+    );
+  }
 
   out.push('<section><h3>Machinery for sale</h3>');
+  // NOT filtered on what you already own. It used to hide any equipment id
+  // you had even one of, which made it impossible to ever buy a second team
+  // of oxen — draft power only ever increases by owning MORE of it, and the
+  // engine already merges a repeat purchase into the existing count rather
+  // than stacking a duplicate entry, so there was never a reason to hide it.
   const machines = equipmentAvailable(state.year)
-    .filter((e) => ['till', 'seed', 'harvest', 'swath', 'thresh'].includes(e.operation) || e.category === 'power')
-    .filter((e) => !state.equipment.some((i) => i.type === e.id));
+    .filter((e) => ['till', 'seed', 'harvest', 'swath', 'thresh'].includes(e.operation) || e.category === 'power');
   if (!machines.length) {
-    out.push(`<div class="empty">You already own one of everything on the market in ${state.year}.</div>`);
+    out.push(`<div class="empty">Nothing is on the market in ${state.year}.</div>`);
   } else {
     for (const e of machines.slice(0, 9)) {
       const price = equipmentPrice(state, e);
       const gain = croppableAcres(state, e.id).acres - croppableAcres(state).acres;
-      const picked = (draft.buyEquipment || []).some((b) => b.type === e.id);
+      const orderedCount = (draft.buyEquipment || []).filter((b) => b.type === e.id).length;
+      const owned = state.equipment.find((i) => i.type === e.id);
+      let label;
+      if (price > cash) label = 'too dear';
+      else if (orderedCount) label = `ordered ×${orderedCount} — buy another`;
+      else if (owned) label = 'buy another';
+      else label = 'buy';
       out.push(
-        `<div class="field${picked ? ' sel' : ''}">
-           <div><div class="nm">${esc(e.name)}</div>
+        `<div class="field${orderedCount ? ' sel' : ''}">
+           <div><div class="nm">${esc(e.name)}${owned ? ` <span class="pill">${owned.count || 1} on the place</span>` : ''}</div>
              <div class="meta">${money(price)}${gain > 0.5 ? ` &middot; +${Math.round(gain)} acres you could crop` : ''}
                ${e.note ? `<br>${esc(e.note)}` : ''}</div></div>
-           <button class="btn sm" data-buy-equip="${e.id}" ${price > cash ? 'disabled' : ''}>
-             ${price > cash ? 'too dear' : picked ? 'ordered' : 'buy'}</button>
+           <button class="btn sm" data-buy-equip="${e.id}" ${price > cash ? 'disabled' : ''}>${label}</button>
          </div>`
       );
     }
@@ -10068,7 +10163,13 @@ function label(k) { return LABELS[k] || k.replace(/([A-Z])/g, ' $1').toLowerCase
 // Family
 // ---------------------------------------------------------------------------
 
-function renderFamily(state) {
+const FAMILY_STANCE_OPTIONS = [
+  { id: 'hoping', label: 'hoping for another' },
+  { id: 'neutral', label: 'leaving it be' },
+  { id: 'avoid', label: 'hoping to wait' },
+];
+
+function renderFamily(state, draft = {}) {
   const out = [];
   const op = operator(state);
   const living = state.family.members.filter(isAlive);
@@ -10104,6 +10205,22 @@ function renderFamily(state) {
         : m.wantsFarm === false ? 'does not want the farm'
         : 'at home';
       out.push(row(`${esc(fullName(m))}, ${a}`, esc(role)));
+
+      const spouse = m.sex === 'female' && m.spouseId
+        ? state.family.members.find((x) => x.id === m.spouseId) : null;
+      if (spouse && isAlive(spouse) && birthChance(state.year, a) > 0) {
+        const current = draft.familyStance?.[m.id] || 'neutral';
+        out.push(`<div class="fields" style="margin:-6px 0 10px">
+          <div class="field" style="flex-direction:column;align-items:stretch;gap:4px">
+            <div class="meta" style="font-size:.8rem;color:var(--ink-3)">${esc(fullName(m))} and ${esc(spouse.name)}</div>
+            <div style="display:flex;gap:4px;flex-wrap:wrap">
+              ${FAMILY_STANCE_OPTIONS.map((o) => `
+                <button class="btn sm${current === o.id ? ' primary' : ''}"
+                  data-family-stance="${m.id}" data-option="${o.id}">${esc(o.label)}</button>`).join('')}
+            </div>
+          </div>
+        </div>`);
+      }
     }
   }
   out.push('</section>');
@@ -10479,7 +10596,7 @@ function emptyDraft() {
     buyLivestock: {}, sellLivestock: {}, buyLand: [], adoptTech: [],
     loans: [], improvements: [], fileHomestead: null, writeWill: null,
     roadWorks: [], takeUpPrograms: [],
-    choiceResponse: {}, lifeChoices: {},
+    choiceResponse: {}, lifeChoices: {}, familyStance: {},
   };
 }
 
@@ -10619,7 +10736,7 @@ function renderGame() {
           ${tab === 'map' ? renderMapPane(state)
             : tab === 'market' ? renderMarket(state, draft)
             : tab === 'books' ? renderBooks(state)
-            : tab === 'family' ? renderFamily(state)
+            : tab === 'family' ? renderFamily(state, draft)
             : `${renderCoach(state)}<section><h3>Needs your decision</h3>${renderAttention(state)}</section>${renderPlan(state, draft)}`}
         </div>
         <div class="actionbar">
@@ -10763,7 +10880,7 @@ function reportModal(record) {
       '<th style="text-align:right">Total</th></tr></thead><tbody>');
     for (const l of h.lines) {
       body.push(`<tr><td>${esc(l.quarter)}</td><td>${esc(l.crop)}</td>
-        <td class="n">${Math.round(l.harvestedAcres)}${l.missedAcres > 1 ? ` <span style="color:var(--alarm)">(+${Math.round(l.missedAcres)} left)</span>` : ''}</td>
+        <td class="n">${Math.round(l.harvestedAcres)}${l.missedAcres > 1 ? ` <span style="color:var(--alarm)" title="Stood in the field too long to cut this year — the harvest window closed first.">(${Math.round(l.missedAcres)} not cut)</span>` : ''}</td>
         <td class="n">${l.perAcre.toFixed(1)}</td>
         <td class="n">${qty(l.amount, l.unit)}</td></tr>`);
     }
@@ -10937,7 +11054,7 @@ let pendingEnd = null;
 function onClick(e) {
   const t = e.target.closest('[data-act],[data-tab],[data-map],[data-quarter],[data-choice],[data-life],' +
     '[data-bg],[data-diff],[data-buy-equip],[data-buy-stock],[data-sell-stock],' +
-    '[data-buy-land],[data-file],[data-tech],[data-will],[data-program],[data-road]');
+    '[data-buy-land],[data-file],[data-tech],[data-will],[data-program],[data-road],[data-family-stance]');
   if (!t) return;
 
   const act = t.dataset.act;
@@ -11006,6 +11123,13 @@ function onClick(e) {
     render(); return;
   }
   if (t.dataset.will) { draft.writeWill = t.dataset.will; render(); return; }
+  if (t.dataset.familyStance) {
+    const id = t.dataset.familyStance;
+    const option = t.dataset.option;
+    if (option === 'neutral' || draft.familyStance[id] === option) delete draft.familyStance[id];
+    else draft.familyStance[id] = option;
+    render(); return;
+  }
 }
 
 function onChange(e) {

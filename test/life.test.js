@@ -145,3 +145,31 @@ test('an unanswered life choice falls back to the hands-off option rather than t
     state.year += 1;
   }
 });
+
+test('a couple hoping for a child has more births over time than a couple avoiding one', () => {
+  // Not a precise probability check, same reasoning as the marriage test
+  // above — just that "hoping" and "avoid" are not the same policy wearing
+  // a different label, and that an unset stance (the bot's default) costs
+  // nothing relative to the old, stance-free behaviour.
+  const trials = 60;
+  let hopingBirths = 0;
+  let avoidBirths = 0;
+  for (let seed = 1; seed <= trials; seed++) {
+    for (const [stance, addTo] of [['hoping', (n) => { hopingBirths += n; }], ['avoid', (n) => { avoidBirths += n; }]]) {
+      const state = newGame({ seed, difficulty: 'settler' });
+      let births = 0;
+      for (let i = 0; i < 25 && state.status === STATUS.ACTIVE; i++) {
+        const plan = makePlan(state);
+        plan.familyStance = {};
+        for (const m of state.family.members) {
+          if (m.sex === 'female' && m.spouseId && !m.deathYear && !m.away) plan.familyStance[m.id] = stance;
+        }
+        const { record } = runYear(state, plan);
+        if (!record) break;
+        births += (record.family || []).filter((e) => e.kind === 'birth').length;
+      }
+      addTo(births);
+    }
+  }
+  assert.ok(hopingBirths > avoidBirths, `hoping (${hopingBirths}) should out-produce avoiding (${avoidBirths})`);
+});

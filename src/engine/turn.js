@@ -667,7 +667,8 @@ function phaseSpring(state, record, plan) {
     record.notes.push(
       `${Math.round(sp.notSeeded)} acres were not seeded — the outfit could work ${Math.round(maxAcres)} acres ` +
         `in ${Math.round(seedDaysAvailable)} days and there were ${Math.round(wantedAcres)} to do. ` +
-        `The ${capacity.bottleneck} is what is holding the farm back.`
+        `The ${capacity.bottleneck} is what is holding the farm back, not the fields set to hay or pasture — ` +
+        `those cost harvest days, not these.`
     );
   }
 
@@ -915,15 +916,23 @@ function phaseHarvest(state, record, plan) {
 
   // Threshing: before the combine, cutting and threshing were separate jobs,
   // and the separator (or a hired crew) was its own constraint.
+  //
+  // GRAIN AND OILSEED ONLY. Hay is cut and stacked, not threshed — there is
+  // no straw to separate grain from — and potatoes and sugar beets are dug.
+  // `totalAcres - lost` used to mean "everything cut this year", hay
+  // included, so a farm that stood nothing but hay in the field still drew a
+  // custom-threshing bill, and a farm that could not pay it "spoiled in the
+  // stook" hay that was never in a stook to begin with.
   const harvester = cap.implement;
   if (harvester?.needsThreshing) {
     const thresh = seasonCapacity(state, 'thresh', BASE_THRESHING_DAYS);
-    const cutAcres = totalAcres - lost;
+    const grainLines = record.harvest.lines.filter((l) => ['grain', 'oilseed'].includes(CROPS[l.cropId]?.category));
+    const cutAcres = grainLines.reduce((sum, l) => sum + l.harvestedAcres, 0);
     if (thresh.acres < cutAcres) {
       const unthreshed = cutAcres - thresh.acres;
       // A custom threshing crew will do the rest, for money and their board.
       const rate = inflate(0.09, state.year);
-      const bushelsAtRisk = record.harvest.lines.reduce((s, l) => s + l.amount, 0) * (unthreshed / Math.max(1, cutAcres));
+      const bushelsAtRisk = grainLines.reduce((s, l) => s + l.amount, 0) * (unthreshed / Math.max(1, cutAcres));
       const fee = bushelsAtRisk * rate;
       if (state.cash >= fee) {
         state.cash -= fee;
@@ -931,7 +940,7 @@ function phaseHarvest(state, record, plan) {
         record.notes.push(`A custom threshing crew took off what the place could not — $${Math.round(fee).toLocaleString()} and their board.`);
       } else {
         // Grain that is cut but not threshed spoils in the stook.
-        for (const l of record.harvest.lines) {
+        for (const l of grainLines) {
           const spoil = l.amount * (unthreshed / Math.max(1, cutAcres)) * 0.6;
           state.granary[l.cropId] = Math.max(0, (state.granary[l.cropId] || 0) - spoil);
           l.amount -= spoil;

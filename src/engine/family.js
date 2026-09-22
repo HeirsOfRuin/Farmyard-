@@ -12,7 +12,7 @@
 import { namePool, surnamePool } from '../data/names.data.js';
 import { TRAITS, TRAIT_IDS, POSITIVE_TRAITS, traitEffect } from '../data/traits.data.js';
 import {
-  marriageEraFor, MARRIAGE_CHECK_AGES, educationEraFor,
+  marriageEraFor, MARRIAGE_CHECK_AGES, educationEraFor, familyStanceMult,
 } from '../data/life.data.js';
 import { inflate } from '../data/prices.data.js';
 
@@ -478,7 +478,8 @@ export function advanceFamily(state, rng, plan = {}) {
     if (!isAlive(m) || m.sex !== 'female' || !m.spouseId || m.away) continue;
     const spouse = fam.members.find((x) => x.id === m.spouseId);
     if (!spouse || !isAlive(spouse)) continue;
-    const p = birthChance(year, age(year, m));
+    const stance = plan.familyStance?.[m.id];
+    const p = birthChance(year, age(year, m)) * familyStanceMult(year, stance);
     if (!rng.chance(p)) continue;
     const child = makeCharacter(rng, {
       surname: fam.surname,

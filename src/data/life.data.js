@@ -96,3 +96,25 @@ export const EDUCATION_ERAS = [
 export function educationEraFor(year) {
   return EDUCATION_ERAS.find((e) => year <= e.to) || EDUCATION_ERAS[EDUCATION_ERAS.length - 1];
 }
+
+/**
+ * How much a couple's own wishes move the odds of another child, by era.
+ * Before reliable contraception — the Pill reached Canada in 1960, and rural
+ * districts later than the cities — "not this year" barely moved the number,
+ * and it was never effective family size limiting so much as it was hoped
+ * for or endured. `hopeMult` and `avoidMult` both widen across the century as
+ * that became less true.
+ */
+export const FAMILY_PLANNING_ERAS = [
+  { to: 1900, hopeMult: 1.1, avoidMult: 0.9 },
+  { to: 1930, hopeMult: 1.15, avoidMult: 0.8 },
+  { to: 1960, hopeMult: 1.2, avoidMult: 0.7 },
+  { to: Infinity, hopeMult: 1.25, avoidMult: 0.4 },
+];
+
+/** `stance` is 'hoping' | 'avoid' | anything else (neutral, the old default). */
+export function familyStanceMult(year, stance) {
+  if (stance !== 'hoping' && stance !== 'avoid') return 1;
+  const era = FAMILY_PLANNING_ERAS.find((e) => year <= e.to) || FAMILY_PLANNING_ERAS[FAMILY_PLANNING_ERAS.length - 1];
+  return stance === 'hoping' ? era.hopeMult : era.avoidMult;
+}

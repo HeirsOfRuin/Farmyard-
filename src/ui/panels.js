@@ -24,7 +24,7 @@ import { EQUIPMENT, equipmentAvailable } from '../data/equipment.data.js';
 import { TECHNOLOGIES } from '../data/tech.data.js';
 import { LIVESTOCK, LIVESTOCK_PRICING } from '../data/livestock.data.js';
 import { cropPrice, FIRST_YEAR } from '../data/prices.data.js';
-import { operator, age, fullName, heirCandidates, TRAITS, isAlive } from '../engine/family.js';
+import { operator, age, fullName, heirCandidates, TRAITS, isAlive, birthChance } from '../engine/family.js';
 import { storageCapacity, interpAnchors } from '../engine/market.js';
 import { quarterPurchasePrice } from '../engine/turn.js';
 import { esc, USE_COLOURS } from './map.js';
@@ -243,6 +243,13 @@ export function renderPlan(state, draft) {
   const breakable = breakableAcres(state);
   out.push(row('Acres the outfit can crop', `${Math.round(cap.acres)} ac`));
   out.push(row('Limited by', cap.bottleneck));
+  out.push(
+    `<div style="font-size:.76rem;color:var(--ink-3);margin:-2px 0 6px">` +
+      `${cap.bottleneck === 'tillage' ? 'A faster plow or a team that can pull a bigger one raises this.'
+        : cap.bottleneck === 'seeding' ? 'A drill, or a better one, raises this.'
+        : 'A faster binder or combine raises this.'} ` +
+      `Hay and pasture do not draw on it at all — only grain competes for these days.</div>`
+  );
   out.push(row('Sod it can break', `${Math.round(breakable.acres)} ac`));
   out.push(`<div class="row"><span class="k">Working with</span></div>
             <div style="font-size:.8rem;color:var(--ink-2);margin:-2px 0 6px">${implementSummary(state)}</div>`);
@@ -398,28 +405,84 @@ function implementSummary(state) {
 // Market / buy panel
 // ---------------------------------------------------------------------------
 
+/**
+ * What the draft has already committed to spend, in plain summed prices —
+ * not a simulation of the order the engine settles purchases in (land, then
+ * equipment, then stock — see phaseSpring in turn.js), just the total. That
+ * is a real gap this leaves: if the total fits but the ORDER does not (the
+ * engine pays for land first and something later in the list comes up
+ * short), the shortfall still only shows up in the year's notes. What this
+ * DOES fix is the common case — queuing more than the farm has, with no way
+ * to see that before the year runs, which is what "wonky, does not tell you
+ * if it worked" actually was.
+ */
+function draftSpend(state, draft) {
+  let committed = 0;
+  for (const b of draft.buyEquipment || []) {
+    const def = EQUIPMENT[b.type];
+    if (def) committed += equipmentPrice(state, def) * (b.count || 1);
+  }
+  for (const [id, count] of Object.entries(draft.buyLivestock || {})) {
+    if (!count) continue;
+    committed += interpAnchors(LIVESTOCK_PRICING[id], state.year) * count;
+  }
+  for (const qid of draft.buyLand || []) {
+    const q = quarterById(state.quarters, qid);
+    if (q) committed += quarterPurchasePrice(state, q);
+  }
+  if (draft.fileHomestead) committed += 10;
+  return { committed, cash: state.cash, over: committed - state.cash };
+}
+
 export function renderMarket(state, draft) {
   const out = [];
-  const cash = state.cash;
+  const spend = draftSpend(state, draft);
+  // What is left to spend, given what is already queued — this is what the
+  // "too dear" checks below compare against, not the raw account balance, so
+  // a second order does not show as affordable against money the first order
+  // already spoken for.
+  const cash = state.cash - spend.committed;
+  out.push(
+    `<div class="row" style="margin-bottom:10px${spend.over > 0.5 ? ';color:var(--alarm)' : ''}">` +
+      `<span class="k">Ordered so far this year</span>` +
+      `<span class="v">${money(spend.committed)} of ${money(spend.cash)} in hand</span></div>`
+  );
+  if (spend.over > 0.5) {
+    out.push(
+      `<div class="empty" style="border-color:var(--alarm);color:var(--alarm);margin-bottom:10px">` +
+        `That is $${Math.round(spend.over).toLocaleString()} more than the account holds. ` +
+        `The engine pays land, then machinery, then stock, in that order — something on this list ` +
+        `will not go through unless something else comes off it.</div>`
+    );
+  }
 
   out.push('<section><h3>Machinery for sale</h3>');
+  // NOT filtered on what you already own. It used to hide any equipment id
+  // you had even one of, which made it impossible to ever buy a second team
+  // of oxen — draft power only ever increases by owning MORE of it, and the
+  // engine already merges a repeat purchase into the existing count rather
+  // than stacking a duplicate entry, so there was never a reason to hide it.
   const machines = equipmentAvailable(state.year)
-    .filter((e) => ['till', 'seed', 'harvest', 'swath', 'thresh'].includes(e.operation) || e.category === 'power')
-    .filter((e) => !state.equipment.some((i) => i.type === e.id));
+    .filter((e) => ['till', 'seed', 'harvest', 'swath', 'thresh'].includes(e.operation) || e.category === 'power');
   if (!machines.length) {
-    out.push(`<div class="empty">You already own one of everything on the market in ${state.year}.</div>`);
+    out.push(`<div class="empty">Nothing is on the market in ${state.year}.</div>`);
   } else {
     for (const e of machines.slice(0, 9)) {
       const price = equipmentPrice(state, e);
       const gain = croppableAcres(state, e.id).acres - croppableAcres(state).acres;
-      const picked = (draft.buyEquipment || []).some((b) => b.type === e.id);
+      const orderedCount = (draft.buyEquipment || []).filter((b) => b.type === e.id).length;
+      const owned = state.equipment.find((i) => i.type === e.id);
+      let label;
+      if (price > cash) label = 'too dear';
+      else if (orderedCount) label = `ordered ×${orderedCount} — buy another`;
+      else if (owned) label = 'buy another';
+      else label = 'buy';
       out.push(
-        `<div class="field${picked ? ' sel' : ''}">
-           <div><div class="nm">${esc(e.name)}</div>
+        `<div class="field${orderedCount ? ' sel' : ''}">
+           <div><div class="nm">${esc(e.name)}${owned ? ` <span class="pill">${owned.count || 1} on the place</span>` : ''}</div>
              <div class="meta">${money(price)}${gain > 0.5 ? ` &middot; +${Math.round(gain)} acres you could crop` : ''}
                ${e.note ? `<br>${esc(e.note)}` : ''}</div></div>
-           <button class="btn sm" data-buy-equip="${e.id}" ${price > cash ? 'disabled' : ''}>
-             ${price > cash ? 'too dear' : picked ? 'ordered' : 'buy'}</button>
+           <button class="btn sm" data-buy-equip="${e.id}" ${price > cash ? 'disabled' : ''}>${label}</button>
          </div>`
       );
     }
@@ -663,7 +726,13 @@ function label(k) { return LABELS[k] || k.replace(/([A-Z])/g, ' $1').toLowerCase
 // Family
 // ---------------------------------------------------------------------------
 
-export function renderFamily(state) {
+const FAMILY_STANCE_OPTIONS = [
+  { id: 'hoping', label: 'hoping for another' },
+  { id: 'neutral', label: 'leaving it be' },
+  { id: 'avoid', label: 'hoping to wait' },
+];
+
+export function renderFamily(state, draft = {}) {
   const out = [];
   const op = operator(state);
   const living = state.family.members.filter(isAlive);
@@ -699,6 +768,22 @@ export function renderFamily(state) {
         : m.wantsFarm === false ? 'does not want the farm'
         : 'at home';
       out.push(row(`${esc(fullName(m))}, ${a}`, esc(role)));
+
+      const spouse = m.sex === 'female' && m.spouseId
+        ? state.family.members.find((x) => x.id === m.spouseId) : null;
+      if (spouse && isAlive(spouse) && birthChance(state.year, a) > 0) {
+        const current = draft.familyStance?.[m.id] || 'neutral';
+        out.push(`<div class="fields" style="margin:-6px 0 10px">
+          <div class="field" style="flex-direction:column;align-items:stretch;gap:4px">
+            <div class="meta" style="font-size:.8rem;color:var(--ink-3)">${esc(fullName(m))} and ${esc(spouse.name)}</div>
+            <div style="display:flex;gap:4px;flex-wrap:wrap">
+              ${FAMILY_STANCE_OPTIONS.map((o) => `
+                <button class="btn sm${current === o.id ? ' primary' : ''}"
+                  data-family-stance="${m.id}" data-option="${o.id}">${esc(o.label)}</button>`).join('')}
+            </div>
+          </div>
+        </div>`);
+      }
     }
   }
   out.push('</section>');

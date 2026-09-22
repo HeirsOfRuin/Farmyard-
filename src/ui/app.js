@@ -67,7 +67,7 @@ function emptyDraft() {
     buyLivestock: {}, sellLivestock: {}, buyLand: [], adoptTech: [],
     loans: [], improvements: [], fileHomestead: null, writeWill: null,
     roadWorks: [], takeUpPrograms: [],
-    choiceResponse: {}, lifeChoices: {},
+    choiceResponse: {}, lifeChoices: {}, familyStance: {},
   };
 }
 
@@ -207,7 +207,7 @@ function renderGame() {
           ${tab === 'map' ? renderMapPane(state)
             : tab === 'market' ? renderMarket(state, draft)
             : tab === 'books' ? renderBooks(state)
-            : tab === 'family' ? renderFamily(state)
+            : tab === 'family' ? renderFamily(state, draft)
             : `${renderCoach(state)}<section><h3>Needs your decision</h3>${renderAttention(state)}</section>${renderPlan(state, draft)}`}
         </div>
         <div class="actionbar">
@@ -351,7 +351,7 @@ function reportModal(record) {
       '<th style="text-align:right">Total</th></tr></thead><tbody>');
     for (const l of h.lines) {
       body.push(`<tr><td>${esc(l.quarter)}</td><td>${esc(l.crop)}</td>
-        <td class="n">${Math.round(l.harvestedAcres)}${l.missedAcres > 1 ? ` <span style="color:var(--alarm)">(+${Math.round(l.missedAcres)} left)</span>` : ''}</td>
+        <td class="n">${Math.round(l.harvestedAcres)}${l.missedAcres > 1 ? ` <span style="color:var(--alarm)" title="Stood in the field too long to cut this year — the harvest window closed first.">(${Math.round(l.missedAcres)} not cut)</span>` : ''}</td>
         <td class="n">${l.perAcre.toFixed(1)}</td>
         <td class="n">${qty(l.amount, l.unit)}</td></tr>`);
     }
@@ -525,7 +525,7 @@ let pendingEnd = null;
 function onClick(e) {
   const t = e.target.closest('[data-act],[data-tab],[data-map],[data-quarter],[data-choice],[data-life],' +
     '[data-bg],[data-diff],[data-buy-equip],[data-buy-stock],[data-sell-stock],' +
-    '[data-buy-land],[data-file],[data-tech],[data-will],[data-program],[data-road]');
+    '[data-buy-land],[data-file],[data-tech],[data-will],[data-program],[data-road],[data-family-stance]');
   if (!t) return;
 
   const act = t.dataset.act;
@@ -594,6 +594,13 @@ function onClick(e) {
     render(); return;
   }
   if (t.dataset.will) { draft.writeWill = t.dataset.will; render(); return; }
+  if (t.dataset.familyStance) {
+    const id = t.dataset.familyStance;
+    const option = t.dataset.option;
+    if (option === 'neutral' || draft.familyStance[id] === option) delete draft.familyStance[id];
+    else draft.familyStance[id] = option;
+    render(); return;
+  }
 }
 
 function onChange(e) {
