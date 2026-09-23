@@ -1005,7 +1005,16 @@ function phaseMarket(state, record, plan) {
     feedRequired: feedRequired(state),
     seededByCrop,
   });
-  const orders = plan.grainSales || defaults.orders;
+  // The player's marketing choice is a STANCE per crop layered onto the
+  // engine's own judgement, not a replacement for it — a plan that only says
+  // "hold the wheat" should not silently sell zero oats it never mentioned.
+  // Set before harvest, when the player cannot know the exact bushel count,
+  // so it has to be expressed as "sell it all" / "hold it back," not a figure.
+  const orders = { ...defaults.orders };
+  for (const [cropId, stance] of Object.entries(plan.grainStance || {})) {
+    if (stance === 'sellAll') orders[cropId] = 'all';
+    else if (stance === 'hold') delete orders[cropId];
+  }
   record.market.retained = defaults.held;
 
   const sale = sellGrain(state, orders, { gradeFactor: conditions.gradeFactor });

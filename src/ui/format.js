@@ -13,6 +13,21 @@ export function money(n) {
   return `${n < 0 ? '-' : ''}$${rounded.toLocaleString('en-CA')}`;
 }
 
+/**
+ * A per-bushel (or per-unit) price, which money() cannot show: grain ran
+ * six cents to a dollar and change a bushel across most of the century, and
+ * money()'s whole-dollar rounding renders every one of those as the
+ * indistinguishable, useless "$0" — which is not price visibility, it is
+ * the absence of it. Anything already dollar-scale (sugar beets, potatoes
+ * by the '80s) still reads as plain whole dollars.
+ */
+export function unitPrice(n) {
+  if (n == null || Number.isNaN(n)) return '—';
+  const v = Math.abs(n);
+  if (v >= 20) return money(n);
+  return `${n < 0 ? '-' : ''}$${v.toFixed(2)}`;
+}
+
 export function qty(n, unit = '') {
   if (n == null || Number.isNaN(n)) return '—';
   const s = n >= 1000 ? Math.round(n).toLocaleString('en-CA')

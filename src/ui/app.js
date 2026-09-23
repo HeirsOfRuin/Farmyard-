@@ -13,12 +13,13 @@ import { farmSummary, netWorth, totalDebt, croppableAcres, breakableAcres } from
 import { playerQuarters, legalDescription, quarterById } from '../engine/land.js';
 import { operator, fullName, age, pendingLifeChoices } from '../engine/family.js';
 import { historyFor } from '../data/history.data.js';
+import { CROPS } from '../data/crops.data.js';
 import { BACKGROUND_LIST } from '../data/names.data.js';
 import { DIFFICULTY_LIST } from '../data/difficulty.data.js';
 import { CENTENNIAL_YEAR, LAST_YEAR, FIRST_YEAR } from '../data/prices.data.js';
 import { renderMap, renderLegend, renderTown, esc } from './map.js';
 import { renderAttention, renderPlan, renderMarket, renderBooks, renderFamily } from './panels.js';
-import { money, qty } from './format.js';
+import { money, qty, unitPrice } from './format.js';
 import {
   activeStep, ackStep, dismissTutorial, reconcileTutorial, markShown,
 } from './tutorial.js';
@@ -67,7 +68,7 @@ function emptyDraft() {
     buyLivestock: {}, sellLivestock: {}, buyLand: [], adoptTech: [],
     loans: [], improvements: [], fileHomestead: null, writeWill: null,
     roadWorks: [], takeUpPrograms: [],
-    choiceResponse: {}, lifeChoices: {}, familyStance: {},
+    choiceResponse: {}, lifeChoices: {}, familyStance: {}, grainStance: {},
   };
 }
 
@@ -375,9 +376,22 @@ function reportModal(record) {
     body.push('<h3 style="margin:16px 0 6px">Sold</h3><table class="ledger"><tbody>');
     for (const l of grain) {
       body.push(`<tr><td>${esc(l.name)}</td><td class="n">${qty(l.amount, l.unit)}</td>
-        <td class="n">@ ${money(l.price)}</td><td class="n">${money(l.gross)}</td></tr>`);
+        <td class="n">@ ${unitPrice(l.price)}</td><td class="n">${money(l.gross)}</td></tr>`);
     }
     body.push('</tbody></table>');
+  }
+
+  // What never went to the elevator: next year's seed, and feed for the
+  // animals and the teams. Computed every year since before this session,
+  // never shown — the "Sold" table above looked like the whole crop, with no
+  // way to tell that some of it was deliberately kept back rather than lost.
+  const retained = Object.entries(record.market.retained || {}).filter(([, v]) => v > 0.5);
+  if (retained.length) {
+    body.push('<h3 style="margin:16px 0 6px">Held back for seed and feed</h3>');
+    for (const [cropId, amount] of retained) {
+      const c = CROPS[cropId];
+      body.push(`<div class="note">${esc(c?.name || cropId)}: ${qty(amount, c?.unit || '')}</div>`);
+    }
   }
 
   if (record.family?.length) {
@@ -538,7 +552,7 @@ let pendingEnd = null;
 function onClick(e) {
   const t = e.target.closest('[data-act],[data-tab],[data-map],[data-quarter],[data-choice],[data-life],' +
     '[data-bg],[data-diff],[data-buy-equip],[data-buy-stock],[data-sell-stock],' +
-    '[data-buy-land],[data-file],[data-tech],[data-will],[data-program],[data-road],[data-family-stance]');
+    '[data-buy-land],[data-file],[data-tech],[data-will],[data-program],[data-road],[data-family-stance],[data-grain-stance]');
   if (!t) return;
 
   const act = t.dataset.act;
@@ -638,6 +652,14 @@ function onClick(e) {
     const option = t.dataset.option;
     if (option === 'neutral' || draft.familyStance[id] === option) delete draft.familyStance[id];
     else draft.familyStance[id] = option;
+    render(); return;
+  }
+  if (t.dataset.grainStance) {
+    const id = t.dataset.grainStance;
+    const option = t.dataset.option;
+    draft.grainStance = draft.grainStance || {};
+    if (option === 'auto' || draft.grainStance[id] === option) delete draft.grainStance[id];
+    else draft.grainStance[id] = option;
     render(); return;
   }
 }

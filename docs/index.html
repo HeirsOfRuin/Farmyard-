@@ -8149,7 +8149,16 @@ function phaseMarket(state, record, plan) {
     feedRequired: feedRequired(state),
     seededByCrop,
   });
-  const orders = plan.grainSales || defaults.orders;
+  // The player's marketing choice is a STANCE per crop layered onto the
+  // engine's own judgement, not a replacement for it — a plan that only says
+  // "hold the wheat" should not silently sell zero oats it never mentioned.
+  // Set before harvest, when the player cannot know the exact bushel count,
+  // so it has to be expressed as "sell it all" / "hold it back," not a figure.
+  const orders = { ...defaults.orders };
+  for (const [cropId, stance] of Object.entries(plan.grainStance || {})) {
+    if (stance === 'sellAll') orders[cropId] = 'all';
+    else if (stance === 'hold') delete orders[cropId];
+  }
   record.market.retained = defaults.held;
 
   const sale = sellGrain(state, orders, { gradeFactor: conditions.gradeFactor });
@@ -9443,6 +9452,21 @@ function money(n) {
   return `${n < 0 ? '-' : ''}$${rounded.toLocaleString('en-CA')}`;
 }
 
+/**
+ * A per-bushel (or per-unit) price, which money() cannot show: grain ran
+ * six cents to a dollar and change a bushel across most of the century, and
+ * money()'s whole-dollar rounding renders every one of those as the
+ * indistinguishable, useless "$0" — which is not price visibility, it is
+ * the absence of it. Anything already dollar-scale (sugar beets, potatoes
+ * by the '80s) still reads as plain whole dollars.
+ */
+function unitPrice(n) {
+  if (n == null || Number.isNaN(n)) return '—';
+  const v = Math.abs(n);
+  if (v >= 20) return money(n);
+  return `${n < 0 ? '-' : ''}$${v.toFixed(2)}`;
+}
+
 function qty(n, unit = '') {
   if (n == null || Number.isNaN(n)) return '—';
   const s = n >= 1000 ? Math.round(n).toLocaleString('en-CA')
@@ -9462,7 +9486,7 @@ function ordinal(n) {
   return n + (s[(v - 20) % 10] || s[v] || s[0]);
 }
 
-return { money, qty, pct, ordinal };
+return { money, unitPrice, qty, pct, ordinal };
 })();
 
 __m["src/ui/panels.js"] = (function () {
@@ -9482,12 +9506,12 @@ const { CROPS, cropsAvailable, WHEAT_VARIETIES } = __m["src/data/crops.data.js"]
 const { EQUIPMENT, equipmentAvailable } = __m["src/data/equipment.data.js"];
 const { TECHNOLOGIES } = __m["src/data/tech.data.js"];
 const { LIVESTOCK, LIVESTOCK_PRICING } = __m["src/data/livestock.data.js"];
-const { cropPrice, FIRST_YEAR, inflate } = __m["src/data/prices.data.js"];
+const { FIRST_YEAR, inflate } = __m["src/data/prices.data.js"];
 const { operator, age, fullName, heirCandidates, TRAITS, isAlive, birthChance } = __m["src/engine/family.js"];
-const { storageCapacity, interpAnchors } = __m["src/engine/market.js"];
+const { storageCapacity, interpAnchors, realisedPrice } = __m["src/engine/market.js"];
 const { quarterPurchasePrice, technologyCost } = __m["src/engine/turn.js"];
 const { esc, USE_COLOURS } = __m["src/ui/map.js"];
-const { money, qty, pct } = __m["src/ui/format.js"];
+const { money, qty, pct, unitPrice } = __m["src/ui/format.js"];
 
 // ---------------------------------------------------------------------------
 // What needs your attention this year
@@ -9904,6 +9928,70 @@ function draftSpend(state, draft) {
   return { committed, cash: state.cash, over: committed - state.cash };
 }
 
+const GRAIN_STANCE_OPTIONS = [
+  { id: 'sellAll', label: 'sell it all' },
+  { id: 'auto', label: 'usual practice' },
+  { id: 'hold', label: 'hold it back' },
+];
+
+/**
+ * Marketing was always a decision, and the engine has judged it on the
+ * player's behalf since before this session — sell the surplus, hold the
+ * seed and feed, and hang onto some of it in a bad-price year once there is
+ * a bin to put it in (defaultSaleOrders, in engine/market.js). None of that
+ * was ever visible or overridable: no price, no bin to buy in the first
+ * place (see the Storage & buildings section below), and no way to say
+ * "not this year" to the elevator.
+ *
+ * This can only offer a STANCE, not a bushel figure. Harvest has not
+ * happened yet when the player sets it — the exact crop is unknown, the
+ * way it always was in spring.
+ */
+function renderGrain(state, draft) {
+  const out = [];
+  out.push('<section><h3>Grain</h3>');
+
+  const planted = new Set(Object.values(draft.fieldUse || {}));
+  const inBin = new Set(Object.keys(state.granary).filter((id) => (state.granary[id] || 0) > 0.5));
+  const crops = [...new Set([...planted, ...inBin])]
+    .map((id) => CROPS[id])
+    .filter((c) => c && ['grain', 'oilseed', 'specialty'].includes(c.category))
+    .filter((c) => state.year >= c.from && state.year <= c.to);
+
+  if (!crops.length) {
+    out.push('<div class="empty">Nothing sellable planted or in store yet.</div>');
+  } else {
+    const cap = storageCapacity(state);
+    const stored = Object.values(state.granary).reduce((a, b) => a + b, 0);
+    out.push(
+      `<div style="font-size:.78rem;color:var(--ink-3);margin-bottom:8px">` +
+        `${qty(stored, 'bu')} of ${qty(cap, 'bu')} of storage in use. Prices are this year's board price, ` +
+        `after freight and grading — what the account would actually see, not what the paper says. ` +
+        `This year's harvest is not in the bins yet, so a choice made now applies to the lot once it is.</div>`
+    );
+    out.push('<div class="fields">');
+    for (const c of crops) {
+      const have = state.granary[c.id] || 0;
+      const price = realisedPrice(state, c.id, { gradeFactor: 1 });
+      const stance = draft.grainStance?.[c.id] || 'auto';
+      out.push(
+        `<div class="field" style="flex-direction:column;align-items:stretch;gap:4px">
+           <div class="nm">${esc(c.name)}${have > 0.5 ? ` <span class="pill">${qty(have, c.unit)} in store</span>` : ''}
+             <span class="pill">${unitPrice(price)}/${esc(c.unit)}</span></div>
+           <div style="display:flex;gap:4px;flex-wrap:wrap">
+             ${GRAIN_STANCE_OPTIONS.map((o) => `
+               <button class="btn sm${stance === o.id ? ' primary' : ''}"
+                 data-grain-stance="${c.id}" data-option="${o.id}">${esc(o.label)}</button>`).join('')}
+           </div>
+         </div>`
+      );
+    }
+    out.push('</div>');
+  }
+  out.push('</section>');
+  return out.join('');
+}
+
 function renderMarket(state, draft) {
   const out = [];
   const spend = draftSpend(state, draft);
@@ -9925,6 +10013,8 @@ function renderMarket(state, draft) {
         `will not go through unless something else comes off it.</div>`
     );
   }
+
+  out.push(renderGrain(state, draft));
 
   out.push('<section><h3>Machinery for sale</h3>');
   // NOT filtered on what you already own. It used to hide any equipment id
@@ -9951,6 +10041,43 @@ function renderMarket(state, draft) {
         `<div class="field${orderedCount ? ' sel' : ''}">
            <div><div class="nm">${esc(e.name)}${owned ? ` <span class="pill">${owned.count || 1} on the place</span>` : ''}</div>
              <div class="meta">${money(price)}${gain > 0.5 ? ` &middot; +${Math.round(gain)} acres you could crop` : ''}
+               ${e.note ? `<br>${esc(e.note)}` : ''}</div></div>
+           <button class="btn sm" data-buy-equip="${e.id}" ${price > cash ? 'disabled' : ''}>${label}</button>
+         </div>`
+      );
+    }
+  }
+  out.push('</section>');
+
+  // Bins, augers, and the barn used to be entirely unbuyable: the market
+  // filter above only ever admitted equipment carrying a till/seed/harvest/
+  // swath/thresh operation or the power category, and storage/handling/
+  // building equipment carries none of those. The whole on-farm-storage
+  // system — storageCapacity(), spoilRate(), the onFarmStorage technology
+  // that requires a steel bin — depended on a purchase the player could
+  // never make.
+  out.push('<section><h3>Storage &amp; buildings</h3>');
+  const buildings = equipmentAvailable(state.year)
+    .filter((e) => ['storage', 'handling', 'building'].includes(e.category));
+  if (!buildings.length) {
+    out.push(`<div class="empty">Nothing of this kind is on the market in ${state.year}.</div>`);
+  } else {
+    for (const e of buildings) {
+      const price = equipmentPrice(state, e);
+      const capNote = e.storage ? `+${e.storage.toLocaleString()} bu storage`
+        : e.livestockCapacity ? `+${e.livestockCapacity} head${e.hayStorage ? ` &middot; +${e.hayStorage} bales hay` : ''}`
+        : null;
+      const orderedCount = (draft.buyEquipment || []).filter((b) => b.type === e.id).length;
+      const owned = state.equipment.find((i) => i.type === e.id);
+      let label;
+      if (price > cash) label = 'too dear';
+      else if (orderedCount) label = `ordered ×${orderedCount} — buy another`;
+      else if (owned) label = 'buy another';
+      else label = 'buy';
+      out.push(
+        `<div class="field${orderedCount ? ' sel' : ''}">
+           <div><div class="nm">${esc(e.name)}${owned ? ` <span class="pill">${owned.count || 1} on the place</span>` : ''}</div>
+             <div class="meta">${money(price)}${capNote ? ` &middot; ${capNote}` : ''}
                ${e.note ? `<br>${esc(e.note)}` : ''}</div></div>
            <button class="btn sm" data-buy-equip="${e.id}" ${price > cash ? 'disabled' : ''}>${label}</button>
          </div>`
@@ -10159,7 +10286,7 @@ function renderBooks(state) {
       const sellable = c && state.year >= c.from && state.year <= c.to && !c.feedOnly;
       out.push(row(
         c?.name || id,
-        `${qty(amount, c?.unit || '')}${sellable ? ` @ ${money(cropPrice(id, state.year))}` : ' (feed)'}`
+        `${qty(amount, c?.unit || '')}${sellable ? ` @ ${unitPrice(realisedPrice(state, id, { gradeFactor: 1 }))} net` : ' (feed)'}`
       ));
     }
     const cap = storageCapacity(state);
@@ -10590,12 +10717,13 @@ const { farmSummary, netWorth, totalDebt, croppableAcres, breakableAcres } = __m
 const { playerQuarters, legalDescription, quarterById } = __m["src/engine/land.js"];
 const { operator, fullName, age, pendingLifeChoices } = __m["src/engine/family.js"];
 const { historyFor } = __m["src/data/history.data.js"];
+const { CROPS } = __m["src/data/crops.data.js"];
 const { BACKGROUND_LIST } = __m["src/data/names.data.js"];
 const { DIFFICULTY_LIST } = __m["src/data/difficulty.data.js"];
 const { CENTENNIAL_YEAR, LAST_YEAR, FIRST_YEAR } = __m["src/data/prices.data.js"];
 const { renderMap, renderLegend, renderTown, esc } = __m["src/ui/map.js"];
 const { renderAttention, renderPlan, renderMarket, renderBooks, renderFamily } = __m["src/ui/panels.js"];
-const { money, qty } = __m["src/ui/format.js"];
+const { money, qty, unitPrice } = __m["src/ui/format.js"];
 const { activeStep, ackStep, dismissTutorial, reconcileTutorial, markShown } = __m["src/ui/tutorial.js"];
 
 const app = document.getElementById('app');
@@ -10642,7 +10770,7 @@ function emptyDraft() {
     buyLivestock: {}, sellLivestock: {}, buyLand: [], adoptTech: [],
     loans: [], improvements: [], fileHomestead: null, writeWill: null,
     roadWorks: [], takeUpPrograms: [],
-    choiceResponse: {}, lifeChoices: {}, familyStance: {},
+    choiceResponse: {}, lifeChoices: {}, familyStance: {}, grainStance: {},
   };
 }
 
@@ -10950,9 +11078,22 @@ function reportModal(record) {
     body.push('<h3 style="margin:16px 0 6px">Sold</h3><table class="ledger"><tbody>');
     for (const l of grain) {
       body.push(`<tr><td>${esc(l.name)}</td><td class="n">${qty(l.amount, l.unit)}</td>
-        <td class="n">@ ${money(l.price)}</td><td class="n">${money(l.gross)}</td></tr>`);
+        <td class="n">@ ${unitPrice(l.price)}</td><td class="n">${money(l.gross)}</td></tr>`);
     }
     body.push('</tbody></table>');
+  }
+
+  // What never went to the elevator: next year's seed, and feed for the
+  // animals and the teams. Computed every year since before this session,
+  // never shown — the "Sold" table above looked like the whole crop, with no
+  // way to tell that some of it was deliberately kept back rather than lost.
+  const retained = Object.entries(record.market.retained || {}).filter(([, v]) => v > 0.5);
+  if (retained.length) {
+    body.push('<h3 style="margin:16px 0 6px">Held back for seed and feed</h3>');
+    for (const [cropId, amount] of retained) {
+      const c = CROPS[cropId];
+      body.push(`<div class="note">${esc(c?.name || cropId)}: ${qty(amount, c?.unit || '')}</div>`);
+    }
   }
 
   if (record.family?.length) {
@@ -11113,7 +11254,7 @@ let pendingEnd = null;
 function onClick(e) {
   const t = e.target.closest('[data-act],[data-tab],[data-map],[data-quarter],[data-choice],[data-life],' +
     '[data-bg],[data-diff],[data-buy-equip],[data-buy-stock],[data-sell-stock],' +
-    '[data-buy-land],[data-file],[data-tech],[data-will],[data-program],[data-road],[data-family-stance]');
+    '[data-buy-land],[data-file],[data-tech],[data-will],[data-program],[data-road],[data-family-stance],[data-grain-stance]');
   if (!t) return;
 
   const act = t.dataset.act;
@@ -11213,6 +11354,14 @@ function onClick(e) {
     const option = t.dataset.option;
     if (option === 'neutral' || draft.familyStance[id] === option) delete draft.familyStance[id];
     else draft.familyStance[id] = option;
+    render(); return;
+  }
+  if (t.dataset.grainStance) {
+    const id = t.dataset.grainStance;
+    const option = t.dataset.option;
+    draft.grainStance = draft.grainStance || {};
+    if (option === 'auto' || draft.grainStance[id] === option) delete draft.grainStance[id];
+    else draft.grainStance[id] = option;
     render(); return;
   }
 }
