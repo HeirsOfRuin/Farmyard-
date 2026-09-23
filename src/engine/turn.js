@@ -311,20 +311,26 @@ function phaseSpring(state, record, plan) {
   const rng = streamFor(state.seed, state.year, 'spring');
   const sp = record.spring;
   sp.actions = [];
+  // Every buy/sell/order button on the market, land, and roads panels queues
+  // an INTENT, not a guarantee — cash spent earlier in this same list can
+  // leave a later item short. `note()` records what actually happened, with
+  // `ok` so the report can tell a success from a failure instead of the
+  // player having to re-read the account balance to find out.
+  const note = (text, ok = true) => sp.actions.push({ text, ok });
 
   // --- a will, if they thought of it ---------------------------------------
   if (plan.writeWill) {
     const r = writeWill(state, plan.writeWill);
-    sp.actions.push(r.ok ? `Will drawn up naming ${r.heirName}.` : `No will: ${r.reason}`);
+    note(r.ok ? `Will drawn up naming ${r.heirName}.` : `No will: ${r.reason}`, r.ok);
     if (r.ok) record.expenses.legal = (record.expenses.legal || 0) + r.cost;
   }
 
   // --- credit ---------------------------------------------------------------
   for (const loan of plan.loans || []) {
     const r = borrow(state, loan);
-    sp.actions.push(r.ok
+    note(r.ok
       ? `Borrowed $${Math.round(loan.amount).toLocaleString()} at ${(r.rate * 100).toFixed(1)}% over ${r.term} years.`
-      : `Could not borrow: ${r.reason}`);
+      : `Could not borrow: ${r.reason}`, r.ok);
     if (r.ok) record.income.borrowed = (record.income.borrowed || 0) + loan.amount;
   }
   for (const rp of plan.repayments || []) {
@@ -335,16 +341,16 @@ function phaseSpring(state, record, plan) {
   // --- land -----------------------------------------------------------------
   if (plan.fileHomestead) {
     const q = quarterById(state.quarters, plan.fileHomestead);
-    if (!q) sp.actions.push('That quarter does not exist.');
-    else if (q.owner) sp.actions.push(`${q.id} is not open to file on.`);
-    else if (q.tenure !== 'homestead') sp.actions.push(`${q.id} is ${q.tenure} land — it must be bought, not filed on.`);
-    else if (state.cash < HOMESTEAD_FEE) sp.actions.push(`No $${HOMESTEAD_FEE} for the filing fee.`);
+    if (!q) note('That quarter does not exist.', false);
+    else if (q.owner) note(`${q.id} is not open to file on.`, false);
+    else if (q.tenure !== 'homestead') note(`${q.id} is ${q.tenure} land — it must be bought, not filed on.`, false);
+    else if (state.cash < HOMESTEAD_FEE) note(`No $${HOMESTEAD_FEE} for the filing fee.`, false);
     else {
       state.cash -= HOMESTEAD_FEE;
       q.owner = 'player'; q.ownerName = 'you';
       q.yearAcquired = state.year; q.acquiredBy = 'homestead';
       record.expenses.landFees = (record.expenses.landFees || 0) + HOMESTEAD_FEE;
-      sp.actions.push(`Filed on ${q.quarter} ${q.section} — $${HOMESTEAD_FEE} and three years to prove it up.`);
+      note(`Filed on ${q.quarter} ${q.section} — $${HOMESTEAD_FEE} and three years to prove it up.`);
     }
   }
 
@@ -352,13 +358,13 @@ function phaseSpring(state, record, plan) {
     const q = quarterById(state.quarters, qid);
     if (!q || q.owner === 'player') continue;
     const price = quarterPurchasePrice(state, q);
-    if (state.cash < price) { sp.actions.push(`${q.id} wanted $${Math.round(price).toLocaleString()} and the account would not stand it.`); continue; }
+    if (state.cash < price) { note(`${q.id} wanted $${Math.round(price).toLocaleString()} and the account would not stand it.`, false); continue; }
     state.cash -= price;
     const from = q.ownerName;
     q.owner = 'player'; q.ownerName = 'you';
     q.yearAcquired = state.year; q.acquiredBy = 'purchase';
     record.expenses.landPurchase = (record.expenses.landPurchase || 0) + price;
-    sp.actions.push(`Bought ${q.quarter} ${q.section} from ${from} for $${Math.round(price).toLocaleString()}.`);
+    note(`Bought ${q.quarter} ${q.section} from ${from} for $${Math.round(price).toLocaleString()}.`);
   }
 
   for (const qid of plan.sellLand || []) {
@@ -368,7 +374,7 @@ function phaseSpring(state, record, plan) {
     q.owner = 'neighbour'; q.ownerName = 'sold'; q.use = 'wheat';
     state.cash += price;
     record.income.landSale = (record.income.landSale || 0) + price;
-    sp.actions.push(`Sold ${q.quarter} ${q.section} for $${Math.round(price).toLocaleString()}.`);
+    note(`Sold ${q.quarter} ${q.section} for $${Math.round(price).toLocaleString()}.`);
   }
 
   // --- machinery, stock, technology ----------------------------------------
@@ -376,11 +382,11 @@ function phaseSpring(state, record, plan) {
     const def = EQUIPMENT[buy.type];
     if (!def) continue;
     if (state.year < def.from || state.year > def.to) {
-      sp.actions.push(`No ${def.name.toLowerCase()} on the market in ${state.year}.`);
+      note(`No ${def.name.toLowerCase()} on the market in ${state.year}.`, false);
       continue;
     }
     const price = equipmentPrice(state, def) * (buy.count || 1);
-    if (state.cash < price) { sp.actions.push(`A ${def.name.toLowerCase()} wanted $${Math.round(price).toLocaleString()}; the account would not stand it.`); continue; }
+    if (state.cash < price) { note(`A ${def.name.toLowerCase()} wanted $${Math.round(price).toLocaleString()}; the account would not stand it.`, false); continue; }
     state.cash -= price;
     // Merge into the existing entry rather than stacking a second one. Three
     // separate "oxen x1" rows are three yokes of oxen eating three lots of
@@ -394,7 +400,7 @@ function phaseSpring(state, record, plan) {
       state.equipment.push({ type: buy.type, count: buy.count || 1, yearBought: state.year, condition: 1 });
     }
     record.expenses.machinery = (record.expenses.machinery || 0) + price;
-    sp.actions.push(`Bought a ${def.name.toLowerCase()} — $${Math.round(price).toLocaleString()}.`);
+    note(`Bought a ${def.name.toLowerCase()} — $${Math.round(price).toLocaleString()}.`);
   }
   for (const type of plan.sellEquipment || []) {
     const idx = state.equipment.findIndex((i) => i.type === type);
@@ -405,20 +411,20 @@ function phaseSpring(state, record, plan) {
     state.equipment.splice(idx, 1);
     state.cash += price;
     record.income.machinerySale = (record.income.machinerySale || 0) + price;
-    sp.actions.push(`Sold the ${def.name.toLowerCase()} for $${Math.round(price).toLocaleString()}.`);
+    note(`Sold the ${def.name.toLowerCase()} for $${Math.round(price).toLocaleString()}.`);
   }
 
   for (const [id, count] of Object.entries(plan.buyLivestock || {})) {
     if (!count) continue;
     const l = LIVESTOCK[id];
-    if (!l || state.year < l.from || state.year > l.to) { sp.actions.push(`No market for ${id} in ${state.year}.`); continue; }
+    if (!l || state.year < l.from || state.year > l.to) { note(`No market for ${id} in ${state.year}.`, false); continue; }
     const each = interpAnchors(LIVESTOCK_PRICING[id], state.year);
     const cost = each * count;
-    if (state.cash < cost) { sp.actions.push(`${count} ${l.name.toLowerCase()} wanted $${Math.round(cost).toLocaleString()}; not this year.`); continue; }
+    if (state.cash < cost) { note(`${count} ${l.name.toLowerCase()} wanted $${Math.round(cost).toLocaleString()}; not this year.`, false); continue; }
     state.cash -= cost;
     state.livestock[id] = (state.livestock[id] || 0) + count;
     record.expenses.livestockPurchase = (record.expenses.livestockPurchase || 0) + cost;
-    sp.actions.push(`Bought ${count} ${l.name.toLowerCase()} for $${Math.round(cost).toLocaleString()}.`);
+    note(`Bought ${count} ${l.name.toLowerCase()} for $${Math.round(cost).toLocaleString()}.`);
   }
   for (const [id, count] of Object.entries(plan.sellLivestock || {})) {
     const have = state.livestock[id] || 0;
@@ -428,40 +434,31 @@ function phaseSpring(state, record, plan) {
     state.livestock[id] = have - n;
     state.cash += each * n;
     record.income.livestockSale = (record.income.livestockSale || 0) + each * n;
-    sp.actions.push(`Sold ${n} ${LIVESTOCK[id].name.toLowerCase()} for $${Math.round(each * n).toLocaleString()}.`);
+    note(`Sold ${n} ${LIVESTOCK[id].name.toLowerCase()} for $${Math.round(each * n).toLocaleString()}.`);
   }
 
-  // How readily this operator takes up something new. Literate reads the
-  // bulletin and gets it right without an expensive false start; stubborn
-  // does the opposite. Applied as a discount or surcharge on the cash cost —
-  // it cannot force a choice that is the player's or the bot's to make, but
-  // it can make that choice cheaper or dearer to act on.
-  const techAdoptionMult = state.operatorTraits?.includes('literate') ? traitEffect('literate', 'techAdoption')
-    : state.operatorTraits?.includes('stubborn') ? traitEffect('stubborn', 'techAdoption')
-    : 1;
   for (const techId of plan.adoptTech || []) {
     const t = TECHNOLOGIES[techId];
     if (!t || state.technologies.includes(techId)) continue;
-    if (state.year < t.from) { sp.actions.push(`${t.name} does not exist yet.`); continue; }
+    if (state.year < t.from) { note(`${t.name} does not exist yet.`, false); continue; }
     if (t.requires && !state.technologies.includes(t.requires)) {
-      sp.actions.push(`${t.name} needs ${TECHNOLOGIES[t.requires].name} first.`); continue;
+      note(`${t.name} needs ${TECHNOLOGIES[t.requires].name} first.`, false); continue;
     }
     if (t.requiresImplement && !state.equipment.some((i) => i.type === t.requiresImplement)) {
-      sp.actions.push(`${t.name} needs a ${EQUIPMENT[t.requiresImplement].name.toLowerCase()}.`); continue;
+      note(`${t.name} needs a ${EQUIPMENT[t.requiresImplement].name.toLowerCase()}.`, false); continue;
     }
-    const baseCost = t.cost ? inflate(t.cost / (priceIndex(t.costYear || 1875) / 100), state.year) : 0;
-    const cost = baseCost / techAdoptionMult;
-    if (state.cash < cost) { sp.actions.push(`${t.name} wanted $${Math.round(cost).toLocaleString()}.`); continue; }
+    const cost = technologyCost(state, techId);
+    if (state.cash < cost) { note(`${t.name} wanted $${Math.round(cost).toLocaleString()}.`, false); continue; }
     state.cash -= cost;
     state.technologies.push(techId);
     record.expenses.improvements = (record.expenses.improvements || 0) + cost;
-    sp.actions.push(`Took up ${t.name.toLowerCase()}${cost ? ` — $${Math.round(cost).toLocaleString()}` : ''}.`);
+    note(`Took up ${t.name.toLowerCase()}${cost ? ` — $${Math.round(cost).toLocaleString()}` : ''}.`);
   }
 
   if (plan.setVariety) {
     const v = WHEAT_VARIETIES.find((x) => x.id === plan.setVariety);
     if (v && state.year >= v.from) {
-      if (state.wheatVariety !== v.id) sp.actions.push(`Changed seed to ${v.name}.`);
+      if (state.wheatVariety !== v.id) note(`Changed seed to ${v.name}.`);
       state.wheatVariety = v.id;
     }
   }
@@ -474,45 +471,55 @@ function phaseSpring(state, record, plan) {
   for (const imp of plan.improvements || []) {
     const q = quarterById(state.quarters, imp.quarterId);
     if (!q || q.owner !== 'player') continue;
+    const label = imp.kind === 'drain' ? 'Draining' : imp.kind === 'stonePick' ? 'Stone-picking' : 'Fencing';
     const costs = { drain: 9, stonePick: 4, fence: 3 };
     const cost = inflate(costs[imp.kind] || 0, state.year) * ACRES_PER_QUARTER * 0.25;
-    if (state.cash < cost) continue;
+    if (state.cash < cost) {
+      note(`${label} ${q.quarter} ${q.section} wanted $${Math.round(cost).toLocaleString()}.`, false);
+      continue;
+    }
     state.cash -= cost;
     if (imp.kind === 'drain') q.drained = true;
     if (imp.kind === 'stonePick') q.stonePicked = true;
     if (imp.kind === 'fence') q.fenced = true;
     record.expenses.improvements = (record.expenses.improvements || 0) + cost;
-    sp.actions.push(`${imp.kind === 'drain' ? 'Drained' : imp.kind === 'stonePick' ? 'Picked stone on' : 'Fenced'} ${q.quarter} ${q.section}.`);
+    note(`${imp.kind === 'drain' ? 'Drained' : imp.kind === 'stonePick' ? 'Picked stone on' : 'Fenced'} ${q.quarter} ${q.section}.`);
   }
 
   // --- government programs --------------------------------------------------
   for (const id of plan.takeUpPrograms || []) {
     const r = takeUpProgram(state, id, record);
-    sp.actions.push(r.ok ? `Took up ${PROGRAMS[id]?.name || id}.` : r.reason);
+    note(r.ok ? `Took up ${PROGRAMS[id]?.name || id}.` : r.reason, r.ok);
   }
 
   // --- road work on your own access ----------------------------------------
+  // One order per quarter per year — road work is a fixed jump in class, not
+  // a "do it again for more" purchase, so a second entry for a quarter
+  // already improved this same pass is dropped rather than charged twice.
+  const roadedThisYear = new Set();
   for (const work of plan.roadWorks || []) {
     const q = quarterById(state.quarters, work.quarterId);
     const spec = ROAD_WORKS[work.kind];
     if (!q || !spec || q.owner !== 'player') continue;
+    if (roadedThisYear.has(q.id)) continue;
+    roadedThisYear.add(q.id);
     if (spec.from && state.year < spec.from) {
-      sp.actions.push(`${spec.name} is not something the council does yet.`);
+      note(`${spec.name} is not something the council does yet.`, false);
       continue;
     }
     if ((q.roadImprovement || 0) >= 2) {
-      sp.actions.push(`The road to ${q.quarter} ${q.section} is as good as it is going to get.`);
+      note(`The road to ${q.quarter} ${q.section} is as good as it is going to get.`, false);
       continue;
     }
     const cost = inflate(spec.cost, state.year);
     if (state.cash < cost) {
-      sp.actions.push(`${spec.name} to ${q.quarter} ${q.section} wanted ${'$' + Math.round(cost).toLocaleString()}.`);
+      note(`${spec.name} to ${q.quarter} ${q.section} wanted ${'$' + Math.round(cost).toLocaleString()}.`, false);
       continue;
     }
     state.cash -= cost;
     q.roadImprovement = (q.roadImprovement || 0) + spec.levels;
     record.expenses.roadWork = (record.expenses.roadWork || 0) + cost;
-    sp.actions.push(
+    note(
       `${spec.name} to ${q.quarter} ${q.section} — $${Math.round(cost).toLocaleString()}. ` +
         `It is ${roadFor(state, q).short} now.`
     );
@@ -1802,10 +1809,25 @@ function quarterPurchasePrice(state, q) {
   return price * (state.modifiers?.landMult ?? 1);
 }
 
+/**
+ * What taking up a technology costs THIS state, this year — the same figure
+ * phaseSpring's adoptTech loop settles with, pulled out so the market panel
+ * can preview it rather than recomputing the trait discount separately.
+ */
+function technologyCost(state, techId) {
+  const t = TECHNOLOGIES[techId];
+  if (!t?.cost) return 0;
+  const techAdoptionMult = state.operatorTraits?.includes('literate') ? traitEffect('literate', 'techAdoption')
+    : state.operatorTraits?.includes('stubborn') ? traitEffect('stubborn', 'techAdoption')
+    : 1;
+  const baseCost = inflate(t.cost / (priceIndex(t.costYear || 1875) / 100), state.year);
+  return baseCost / techAdoptionMult;
+}
+
 function sumValues(obj) {
   let s = 0;
   for (const [k, v] of Object.entries(obj)) if (k !== 'total' && typeof v === 'number') s += v;
   return s;
 }
 
-export { quarterPurchasePrice };
+export { quarterPurchasePrice, technologyCost };

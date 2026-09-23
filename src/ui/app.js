@@ -332,6 +332,19 @@ function reportModal(record) {
       ${ev.chose ? `<p style="margin-top:4px"><em>You: ${esc(ev.chose)}</em></p>` : ''}</div>`);
   }
 
+  // What was ordered from the market, land, and roads panels last turn — a
+  // buy or sell button queues an INTENT, not a guarantee, and this is the
+  // only place that says which of them actually went through. A queued
+  // purchase can still fail here on cash that an earlier item in the same
+  // plan already spent, even when the market panel looked affordable when
+  // it was clicked.
+  if (record.spring.actions?.length) {
+    body.push('<h3 style="margin-bottom:6px">This year\'s orders</h3>');
+    for (const a of record.spring.actions) {
+      body.push(`<div class="note"${a.ok ? '' : ' style="color:var(--alarm)"'}>${esc(a.text)}</div>`);
+    }
+  }
+
   const events = record.season.events || [];
   if (events.length) {
     body.push('<h3 style="margin-bottom:6px">The season</h3>');
@@ -582,15 +595,41 @@ function onClick(e) {
     draft.sellLivestock[id] = (draft.sellLivestock[id] || 0) + 1;
     render(); return;
   }
-  if (t.dataset.buyLand) { draft.buyLand.push(t.dataset.buyLand); render(); return; }
-  if (t.dataset.file) { draft.fileHomestead = t.dataset.file; render(); return; }
-  if (t.dataset.tech) { draft.adoptTech.push(t.dataset.tech); render(); return; }
+  // Land, filing, technology, programs, and road work each mean one thing
+  // per quarter/id per year — unlike equipment or livestock, clicking twice
+  // does not mean "twice as much." These toggle: a second click on the same
+  // thing cancels it, rather than silently queuing a duplicate order that
+  // either double-charges (roads) or does nothing (land, already owned by
+  // the time a second entry resolves).
+  if (t.dataset.buyLand) {
+    const id = t.dataset.buyLand;
+    const i = draft.buyLand.indexOf(id);
+    if (i >= 0) draft.buyLand.splice(i, 1); else draft.buyLand.push(id);
+    render(); return;
+  }
+  if (t.dataset.file) {
+    draft.fileHomestead = draft.fileHomestead === t.dataset.file ? null : t.dataset.file;
+    render(); return;
+  }
+  if (t.dataset.tech) {
+    const id = t.dataset.tech;
+    const i = draft.adoptTech.indexOf(id);
+    if (i >= 0) draft.adoptTech.splice(i, 1); else draft.adoptTech.push(id);
+    render(); return;
+  }
   if (t.dataset.program) {
-    draft.takeUpPrograms = [...(draft.takeUpPrograms || []), t.dataset.program];
+    const id = t.dataset.program;
+    draft.takeUpPrograms = draft.takeUpPrograms || [];
+    const i = draft.takeUpPrograms.indexOf(id);
+    if (i >= 0) draft.takeUpPrograms.splice(i, 1); else draft.takeUpPrograms.push(id);
     render(); return;
   }
   if (t.dataset.road) {
-    draft.roadWorks = [...(draft.roadWorks || []), { quarterId: t.dataset.road, kind: t.dataset.roadkind }];
+    const qid = t.dataset.road;
+    draft.roadWorks = draft.roadWorks || [];
+    const i = draft.roadWorks.findIndex((w) => w.quarterId === qid);
+    if (i >= 0) draft.roadWorks.splice(i, 1);
+    else draft.roadWorks.push({ quarterId: qid, kind: t.dataset.roadkind });
     render(); return;
   }
   if (t.dataset.will) { draft.writeWill = t.dataset.will; render(); return; }

@@ -23,10 +23,10 @@ import { CROPS, cropsAvailable, WHEAT_VARIETIES } from '../data/crops.data.js';
 import { EQUIPMENT, equipmentAvailable } from '../data/equipment.data.js';
 import { TECHNOLOGIES } from '../data/tech.data.js';
 import { LIVESTOCK, LIVESTOCK_PRICING } from '../data/livestock.data.js';
-import { cropPrice, FIRST_YEAR } from '../data/prices.data.js';
+import { cropPrice, FIRST_YEAR, inflate } from '../data/prices.data.js';
 import { operator, age, fullName, heirCandidates, TRAITS, isAlive, birthChance } from '../engine/family.js';
 import { storageCapacity, interpAnchors } from '../engine/market.js';
-import { quarterPurchasePrice } from '../engine/turn.js';
+import { quarterPurchasePrice, technologyCost } from '../engine/turn.js';
 import { esc, USE_COLOURS } from './map.js';
 import { money, qty, pct } from './format.js';
 
@@ -426,11 +426,22 @@ function draftSpend(state, draft) {
     if (!count) continue;
     committed += interpAnchors(LIVESTOCK_PRICING[id], state.year) * count;
   }
-  for (const qid of draft.buyLand || []) {
+  // Deduped — a quarter you can only actually buy once should not count
+  // twice just because it appears twice in the draft.
+  for (const qid of new Set(draft.buyLand || [])) {
     const q = quarterById(state.quarters, qid);
     if (q) committed += quarterPurchasePrice(state, q);
   }
   if (draft.fileHomestead) committed += 10;
+  for (const id of draft.adoptTech || []) committed += technologyCost(state, id);
+  for (const work of draft.roadWorks || []) {
+    const spec = ROAD_WORKS[work.kind];
+    if (spec) committed += inflate(spec.cost, state.year);
+  }
+  for (const id of draft.takeUpPrograms || []) {
+    const p = PROGRAM_LIST.find((x) => x.id === id);
+    if (p?.cost) committed += inflate(p.cost, state.year) * (1 - (p.costShare ?? 0));
+  }
   return { committed, cash: state.cash, over: committed - state.cash };
 }
 
@@ -494,13 +505,19 @@ export function renderMarket(state, draft) {
   for (const l of stock) {
     const price = interpAnchors(LIVESTOCK_PRICING[l.id], state.year);
     const have = state.livestock[l.id] || 0;
+    const orderedBuy = draft.buyLivestock?.[l.id] || 0;
+    const orderedSell = draft.sellLivestock?.[l.id] || 0;
     out.push(
-      `<div class="field">
-         <div><div class="nm">${esc(l.name)} <span class="pill">${have} head</span></div>
+      `<div class="field${orderedBuy || orderedSell ? ' sel' : ''}">
+         <div><div class="nm">${esc(l.name)} <span class="pill">${have} head</span>
+             ${orderedBuy ? ` <span class="pill good">buying ${orderedBuy}</span>` : ''}
+             ${orderedSell ? ` <span class="pill warn">selling ${orderedSell}</span>` : ''}</div>
            <div class="meta">${money(price)} each &middot; ${esc(l.note)}</div></div>
          <div style="display:flex;gap:4px">
-           <button class="btn sm" data-buy-stock="${l.id}" ${price > cash ? 'disabled' : ''}>buy</button>
-           <button class="btn sm" data-sell-stock="${l.id}" ${have < 1 ? 'disabled' : ''}>sell</button>
+           <button class="btn sm" data-buy-stock="${l.id}" ${price > cash ? 'disabled' : ''}>
+             ${orderedBuy ? 'buy another' : 'buy'}</button>
+           <button class="btn sm" data-sell-stock="${l.id}" ${have - orderedSell < 1 ? 'disabled' : ''}>
+             ${orderedSell ? 'sell another' : 'sell'}</button>
          </div>
        </div>`
     );
@@ -520,13 +537,14 @@ export function renderMarket(state, draft) {
   } else {
     for (const { q, price } of buyable) {
       const free = !q.owner;
+      const queued = free ? draft.fileHomestead === q.id : (draft.buyLand || []).includes(q.id);
       out.push(
-        `<div class="field">
-           <div><div class="nm">${esc(legalDescription(q, state.townshipLabel))}</div>
+        `<div class="field${queued ? ' sel' : ''}">
+           <div><div class="nm">${esc(legalDescription(q, state.townshipLabel))}${queued ? ' <span class="pill good">queued</span>' : ''}</div>
              <div class="meta">${free ? 'Open for homestead entry &middot; $10 filing fee' :
                `${esc(q.ownerName || 'held')} &middot; ${money(price)}`}</div></div>
-           <button class="btn sm" data-${free ? 'file' : 'buy-land'}="${q.id}" ${price > cash ? 'disabled' : ''}>
-             ${price > cash ? 'too dear' : free ? 'file' : 'buy'}</button>
+           <button class="btn sm" data-${free ? 'file' : 'buy-land'}="${q.id}" ${!queued && price > cash ? 'disabled' : ''}>
+             ${queued ? 'queued — click to cancel' : price > cash ? 'too dear' : free ? 'file' : 'buy'}</button>
          </div>`
       );
     }
@@ -545,15 +563,16 @@ export function renderMarket(state, draft) {
   } else {
     for (const { program: p, ok, reason } of offers) {
       const joined = isEnrolled(state, p.id);
+      const queued = (draft.takeUpPrograms || []).includes(p.id);
       out.push(
-        `<div class="field${joined ? ' sel' : ''}">
-           <div><div class="nm">${esc(p.name)}${joined ? ' <span class="pill good">taken up</span>' : ''}</div>
-             <div class="meta">${p.cost ? `your share ${money(p.cost * (1 - (p.costShare ?? 0)))}` : ''}
+        `<div class="field${joined || queued ? ' sel' : ''}">
+           <div><div class="nm">${esc(p.name)}${joined ? ' <span class="pill good">taken up</span>' : queued ? ' <span class="pill good">queued</span>' : ''}</div>
+             <div class="meta">${p.cost ? `your share ${money(inflate(p.cost, state.year) * (1 - (p.costShare ?? 0)))}` : ''}
                ${p.premiumPerAcre ? `${money(p.premiumPerAcre)}/ac a year` : ''}
                ${!ok ? ` &middot; <span style="color:var(--ink-3)">${esc(reason)}</span>` : ''}
                <br>${esc(p.note)}</div></div>
            <button class="btn sm" data-program="${p.id}" ${!ok || joined ? 'disabled' : ''}>
-             ${joined ? 'in' : 'take up'}</button>
+             ${joined ? 'in' : queued ? 'queued — click to cancel' : 'take up'}</button>
          </div>`
       );
     }
@@ -591,14 +610,16 @@ export function renderMarket(state, draft) {
     for (const { q, loss } of roadable) {
       const gravel = state.year >= ROAD_WORKS.gravelPetition.from;
       const spec = gravel ? ROAD_WORKS.gravelPetition : ROAD_WORKS.approach;
+      const cost = inflate(spec.cost, state.year);
+      const queued = (draft.roadWorks || []).some((w) => w.quarterId === q.id);
       out.push(
-        `<div class="field">
-           <div><div class="nm">${esc(legalDescription(q, state.townshipLabel))}</div>
+        `<div class="field${queued ? ' sel' : ''}">
+           <div><div class="nm">${esc(legalDescription(q, state.townshipLabel))}${queued ? ' <span class="pill good">queued</span>' : ''}</div>
              <div class="meta">${distanceFromYard(state, q)} mi on ${esc(roadFor(state, q).short)}
                ${loss > 0.03 ? `&middot; losing ${Math.round(loss * 100)}% of this field` : ''}
                <br>${esc(spec.note)}</div></div>
-           <button class="btn sm" data-road="${q.id}" data-roadkind="${spec.id}">
-             ${money(spec.cost)}</button>
+           <button class="btn sm" data-road="${q.id}" data-roadkind="${spec.id}" ${!queued && cost > cash ? 'disabled' : ''}>
+             ${queued ? 'queued — click to cancel' : `${money(cost)}`}</button>
          </div>`
       );
     }
@@ -620,13 +641,16 @@ export function renderMarket(state, draft) {
         : (t.requiresImplement && !state.equipment.some((i) => i.type === t.requiresImplement))
           ? `needs a ${EQUIPMENT[t.requiresImplement].name.toLowerCase()}`
           : null;
+      const cost = technologyCost(state, t.id);
+      const queued = (draft.adoptTech || []).includes(t.id);
       out.push(
-        `<div class="field">
-           <div><div class="nm">${esc(t.name)}</div>
-             <div class="meta">${t.costPerAcre ? `${money(t.costPerAcre)}/ac` : t.cost ? money(t.cost) : 'no cost'}
+        `<div class="field${queued ? ' sel' : ''}">
+           <div><div class="nm">${esc(t.name)}${queued ? ' <span class="pill good">queued</span>' : ''}</div>
+             <div class="meta">${t.costPerAcre ? `${money(t.costPerAcre)}/ac` : cost ? money(cost) : 'no cost'}
                ${blocked ? ` &middot; <span style="color:var(--alarm)">${esc(blocked)}</span>` : ''}
                <br>${esc(t.note)}</div></div>
-           <button class="btn sm" data-tech="${t.id}" ${blocked ? 'disabled' : ''}>take up</button>
+           <button class="btn sm" data-tech="${t.id}" ${blocked || (!queued && cost > cash) ? 'disabled' : ''}>
+             ${queued ? 'queued — click to cancel' : 'take up'}</button>
          </div>`
       );
     }
