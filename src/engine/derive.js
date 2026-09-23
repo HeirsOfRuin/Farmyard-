@@ -694,6 +694,34 @@ export function feedRequired(state) {
   return { hay, grain };
 }
 
+/**
+ * What the herd will need by THIS winter, not what it needed standing in the
+ * yard when the grain was sold in the fall.
+ *
+ * phaseMarket sells the crop before phaseWinter breeds the flock, so a
+ * feed reservation sized to feedRequired() as it stands at market time is
+ * sized to last year's head count — and a flock like poultry, which can
+ * very nearly double in a season (breedRate 2.2), routinely outgrows a
+ * reservation made before that growth happened. The shortfall this produces
+ * is real, but it is not a shortfall the farm actually had; it is a
+ * reservation that was too small for a herd that did not exist yet when the
+ * reservation was made. Projects one season's natural increase with the
+ * same plain breedRate/mortality arithmetic phaseWinter uses (no trait
+ * adjustment — this is a reservation estimate, not the actual outcome) and
+ * sizes the requirement to that instead.
+ */
+export function projectedFeedRequired(state) {
+  const projected = {};
+  for (const [id, count] of Object.entries(state.livestock || {})) {
+    const l = LIVESTOCK[id];
+    if (!l || !count) { projected[id] = count; continue; }
+    const born = Math.floor(count * l.breedRate * 0.5);
+    const died = Math.floor(count * l.mortality);
+    projected[id] = Math.max(0, count + born - died);
+  }
+  return feedRequired({ ...state, livestock: projected });
+}
+
 /** Animals that can be grazed rather than fed, given pasture acres. */
 /**
  * How much stock this farm can actually carry.

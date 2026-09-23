@@ -15,7 +15,7 @@ import { streamFor } from './rng.js';
 import { STATUS, ownedQuarters } from './state.js';
 import {
   yieldPerAcre, neutralConditions, seasonCapacity, springDays, harvestDays,
-  feedRequired, grazingCapacity, livingCost, annualWage, labourForce, netWorth,
+  feedRequired, projectedFeedRequired, grazingCapacity, livingCost, annualWage, labourForce, netWorth,
   totalDebt, farmSummary, bestImplement, bestBreaker, clamp, currentVariety, equipmentPrice,
   propertyTax, conditionFactor,
   creditLimit, croppableAcres, breakableAcres, weedControlLevel,
@@ -997,12 +997,19 @@ function phaseMarket(state, record, plan) {
   // Sell the surplus and hold back the seed and the feed. A farm with no
   // marketing plan still sells its crop — it does not sit on it by accident —
   // but it does not sell the oats the horses eat either.
+  //
+  // The feed reservation is sized to projectedFeedRequired(), not
+  // feedRequired() as the herd stands at market time: this phase runs
+  // BEFORE phaseWinter breeds the flock, so a reservation against today's
+  // head count is a reservation for a herd that is about to grow, most
+  // visibly for poultry, which can nearly double in a season. Selling the
+  // difference as "surplus" reserved a shortfall that had not happened yet.
   const seededByCrop = {};
   for (const l of record.harvest.lines || []) {
     seededByCrop[l.cropId] = (seededByCrop[l.cropId] || 0) + l.harvestedAcres;
   }
   const defaults = defaultSaleOrders(state, {
-    feedRequired: feedRequired(state),
+    feedRequired: projectedFeedRequired(state),
     seededByCrop,
   });
   // The player's marketing choice is a STANCE per crop layered onto the
@@ -1410,6 +1417,32 @@ function phaseWinter(state, record, plan) {
   const rng = streamFor(state.seed, state.year, 'winter');
   if (state.status !== STATUS.ACTIVE) return;
 
+  // --- livestock increase, bounded by what the place can carry --------------
+  //
+  // Moved ahead of the feed check below. Bred FIRST, the shortfall a farm is
+  // actually facing this winter is sized against the herd it actually has —
+  // calves and chicks included, since they eat too — and a forced sale
+  // rightsizes THAT population. Bred after, as this used to be, the animals
+  // just sold for want of feed were replaced by new ones in the same
+  // breath, in the same year, before the ledger even closed: the note said
+  // "6 head sold," the account got the cash, and the head count next season
+  // read the same or higher, because breeding had already put the loss
+  // back. Nothing was wrong with the sale — it was real, and spent — but it
+  // never showed, and the shortfall that caused it was never actually
+  // relieved, which is why it kept recurring: a farm that can't feed eight
+  // hens never got the chance to carry fewer than eight.
+  const stockman = state.operatorTraits?.includes('stockman');
+  const stockYieldMult = stockman ? traitEffect('stockman', 'livestockYield') : 1;
+  const stockMortalityMult = stockman ? traitEffect('stockman', 'livestockMortality') : 1;
+  for (const [id, count] of Object.entries(state.livestock)) {
+    if (!count) continue;
+    const l = LIVESTOCK[id];
+    if (!l) continue;
+    const born = Math.floor(count * l.breedRate * 0.5 * stockYieldMult);
+    const died = Math.floor(count * l.mortality * stockMortalityMult);
+    state.livestock[id] = Math.max(0, count + born - died);
+  }
+
   // --- feed the stock -------------------------------------------------------
   const required = feedRequired(state);
   const conditions = state.yearConditions || neutralConditions();
@@ -1429,17 +1462,20 @@ function phaseWinter(state, record, plan) {
       (fed.hayShort / Math.max(1, required.hay) + fed.grainShort / Math.max(1, required.grain)) / 2, 0, 1
     );
     let soldTotal = 0;
+    let proceeds = 0;
     for (const [id, count] of Object.entries(state.livestock)) {
       if (!count) continue;
       const sell = Math.ceil(count * shortfallRatio * 0.7);
       if (sell <= 0) continue;
       const each = interpAnchors(LIVESTOCK_PRICING[id], state.year) * 0.75; // everyone is selling
       state.livestock[id] = count - sell;
-      state.cash += each * sell;
+      const gross = each * sell;
+      state.cash += gross;
+      proceeds += gross;
       soldTotal += sell;
     }
     if (soldTotal > 0) {
-      record.income.feedShortSale = (record.income.feedShortSale || 0);
+      record.income.feedShortSale = (record.income.feedShortSale || 0) + proceeds;
       record.notes.push(
         `Short of winter feed: ${soldTotal} head sold in November at what the buyers felt like paying.`
       );
@@ -1577,19 +1613,6 @@ function phaseWinter(state, record, plan) {
         record.income.surplusStockSale = (record.income.surplusStockSale || 0) + price;
       }
     }
-  }
-
-  // --- livestock increase, bounded by what the place can carry --------------
-  const stockman = state.operatorTraits?.includes('stockman');
-  const stockYieldMult = stockman ? traitEffect('stockman', 'livestockYield') : 1;
-  const stockMortalityMult = stockman ? traitEffect('stockman', 'livestockMortality') : 1;
-  for (const [id, count] of Object.entries(state.livestock)) {
-    if (!count) continue;
-    const l = LIVESTOCK[id];
-    if (!l) continue;
-    const born = Math.floor(count * l.breedRate * 0.5 * stockYieldMult);
-    const died = Math.floor(count * l.mortality * stockMortalityMult);
-    state.livestock[id] = Math.max(0, count + born - died);
   }
 
   // Species that are limited by a building rather than by grass are trimmed to

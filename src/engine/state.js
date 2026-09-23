@@ -14,6 +14,7 @@ import { background as backgroundDef } from '../data/names.data.js';
 import { difficulty as difficultyDef } from '../data/difficulty.data.js';
 import { surnamePool } from '../data/names.data.js';
 import { FIRST_YEAR, LAST_YEAR } from '../data/prices.data.js';
+import { projectedFeedRequired } from './derive.js';
 
 export const SAVE_KEY = 'centennial-farm.save.v1';
 export const SAVE_VERSION = 1;
@@ -128,6 +129,18 @@ export function newGame({ seed = 1, difficulty = 'settler', background = 'ontari
     // Set when the run ends, for the summary screen and the harness.
     outcome: null,
   };
+
+  // A settler did not arrive with an empty loft. Whatever oxen or a first
+  // few hens they brought, they brought (or bought, out of the capital
+  // already charged above) enough to see the animals through to a first
+  // cutting — the granary otherwise starts at exactly zero, and the first
+  // winter's feed check runs before there has been a single harvest to fill
+  // it, which made the very first year's "short of winter feed" forced
+  // sale unconditional: nothing a player did in that first spring and
+  // summer could have put hay in a bin that starts the game empty.
+  const starterFeed = projectedFeedRequired(state);
+  if (starterFeed.hay > 0) state.granary.hay = starterFeed.hay;
+  if (starterFeed.grain > 0) state.granary.oats = starterFeed.grain;
 
   state.log.push({
     year: FIRST_YEAR,

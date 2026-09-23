@@ -3053,255 +3053,6 @@ const CLAIMED_DIFFERENCES = [
 return { difficulty, DIFFICULTIES, DIFFICULTY_LIST, CLAIMED_DIFFERENCES };
 })();
 
-__m["src/engine/state.js"] = (function () {
-// Game state: its shape, how a new game is built, and how it is saved.
-//
-// The save key is a contract, not a label. `centennial-farm.save.v1` is fixed
-// from the first commit and carries an explicit version number, because a save
-// already sitting in somebody's browser refers to this string. Renaming it
-// silently orphans every game in progress; changing the shape without bumping
-// the version silently corrupts them. Migrations go in `migrate()` below.
-
-const { makeRng, streamFor } = __m["src/engine/rng.js"];
-const { generateTownship, seedNeighbours, quarterById, ACRES_PER_QUARTER } = __m["src/engine/land.js"];
-const { foundFamily } = __m["src/engine/family.js"];
-const { region: regionDef } = __m["src/data/regions.data.js"];
-const { background: backgroundDef } = __m["src/data/names.data.js"];
-const { difficulty: difficultyDef } = __m["src/data/difficulty.data.js"];
-const { surnamePool } = __m["src/data/names.data.js"];
-const { FIRST_YEAR, LAST_YEAR } = __m["src/data/prices.data.js"];
-
-const SAVE_KEY = 'centennial-farm.save.v1';
-const SAVE_VERSION = 1;
-
-const STATUS = {
-  ACTIVE: 'active',
-  RUINED: 'ruined',       // foreclosed; the land is gone
-  LINE_ENDED: 'lineEnded', // no heir would or could take it on
-  COMPLETE: 'complete',   // reached 2000 still farming
-};
-
-/**
- * Build a new game. Everything about the run is a pure function of
- * (seed, difficulty, background), which is what makes a seed reproducible and
- * what makes the balance harness meaningful.
- */
-function newGame({ seed = 1, difficulty = 'settler', background = 'ontario' } = {}) {
-  const bg = backgroundDef(background);
-  const diff = difficultyDef(difficulty);
-  const reg = regionDef(bg.region);
-  const setup = streamFor(seed, FIRST_YEAR, 'setup');
-
-  const quarters = generateTownship(setup, reg);
-
-  // The home quarter: the one they filed on. It must be homestead-eligible,
-  // because that is the only kind a settler could get for the $10 fee.
-  const eligible = quarters.filter((q) => q.tenure === 'homestead');
-  const home = setup.pick(eligible);
-  home.owner = 'player';
-  home.ownerName = 'you';
-  home.yearAcquired = FIRST_YEAR;
-  home.acquiredBy = 'homestead';
-  home.brokenAcres = 0;
-  home.use = 'idle';
-
-  seedNeighbours(setup, quarters, surnamePool(bg.origin), home.id);
-
-  const family = foundFamily(setup, { backgroundDef: bg, year: FIRST_YEAR, difficultyDef: diff });
-
-  const equipment = bg.startingEquipment.map((type) => ({
-    type, count: 1, yearBought: FIRST_YEAR, condition: setup.float(0.6, 0.9),
-  }));
-
-  const livestock = {};
-  const draftFromBackground = {};
-  for (const [k, v] of Object.entries(bg.startingLivestock)) {
-    // Oxen and horses are power, not livestock — they live in `equipment`.
-    if (k === 'oxen' || k === 'horses') draftFromBackground[k] = v;
-    else livestock[k] = v;
-  }
-  for (const [type, count] of Object.entries(draftFromBackground)) {
-    equipment.push({ type, count, yearBought: FIRST_YEAR, condition: setup.float(0.7, 0.95) });
-  }
-
-  const state = {
-    version: SAVE_VERSION,
-    seed,
-    year: FIRST_YEAR,
-    status: STATUS.ACTIVE,
-
-    difficulty,
-    difficultyDef: diff,
-    background,
-    backgroundDef: bg,
-    region: bg.region,
-    regionDef: reg,
-    townshipLabel: reg.townshipLabel,
-    haulMiles: reg.initialHaulMiles,
-
-    quarters,
-    homeQuarterId: home.id,
-
-    family,
-
-    cash: Math.round(bg.startingCapital * diff.startingCapitalMult),
-    debts: [],
-    storeAccount: 0, // carried at the general store until the crop is sold
-    statuteDaysWorked: 0, // days owed the municipality on the roads, worked off
-    equipment,
-    livestock,
-    granary: {},
-    technologies: [],
-    wheatVariety: 'redFife',
-    hiredHands: 0,
-    standardOfLiving: 1,
-
-    // Flags set by history and never unset; modifiers expire.
-    flags: {
-      homesteadProved: false,
-      centennialEarned: false,
-      joinedPool: false,
-      compulsoryBoard: false,
-    },
-    modifiers: {},
-    activeEffects: [], // { effects, expiresAfter }
-
-    // Where the farm started, so the walkthrough can say "two years in" without
-    // hardcoding 1875 and without the UI keeping a second copy of it.
-    startYear: FIRST_YEAR,
-    startingEquipmentCount: equipment.length,
-    // The walkthrough's progress rides in the SAVE, not in browser storage:
-    // resuming a game in 1932 should not start explaining what sod is, and a
-    // second game on the same device should teach a new player again.
-    tutorial: { seen: [], dismissed: false },
-
-    // Per-year record. This is the ledger the player reads and the data the
-    // balance harness measures, so it is built by the engine, never by the UI.
-    ledger: [],
-    log: [],
-    pendingChoice: null,
-
-    // Set when the run ends, for the summary screen and the harness.
-    outcome: null,
-  };
-
-  state.log.push({
-    year: FIRST_YEAR,
-    kind: 'start',
-    text:
-      `${family.members[0].name} ${family.surname} filed on ${home.quarter} ${home.section} ` +
-      `in ${reg.townshipLabel}, ${reg.name}. One hundred and sixty acres of unbroken prairie, ` +
-      `a ten dollar filing fee, and three years to prove it up.`,
-  });
-
-  return state;
-}
-
-/** Quarters the player holds. */
-function ownedQuarters(state) {
-  return state.quarters.filter((q) => q.owner === 'player');
-}
-
-function isOver(state) {
-  return state.status !== STATUS.ACTIVE;
-}
-
-// ---------------------------------------------------------------------------
-// Saving
-// ---------------------------------------------------------------------------
-
-// Definitions are re-attached on load rather than stored: they are code, and a
-// save that carries a stale copy of the difficulty table would quietly play by
-// last version's rules.
-const DERIVED_KEYS = ['difficultyDef', 'backgroundDef', 'regionDef'];
-
-function serialize(state) {
-  const out = { ...state };
-  for (const k of DERIVED_KEYS) delete out[k];
-  return JSON.stringify(out);
-}
-
-function deserialize(json) {
-  const raw = typeof json === 'string' ? JSON.parse(json) : json;
-  const migrated = migrate(raw);
-  return rehydrate(migrated);
-}
-
-/** Re-attach the code-side definitions a save deliberately does not carry. */
-function rehydrate(s) {
-  s.difficultyDef = difficultyDef(s.difficulty);
-  s.backgroundDef = backgroundDef(s.background);
-  s.regionDef = regionDef(s.region);
-  // Fields added after this save was written. A game in progress from an
-  // earlier build must keep loading — the walkthrough simply does not run for
-  // it, which is right: it is already years past anything it would explain.
-  if (s.startYear == null) s.startYear = FIRST_YEAR;
-  if (s.startingEquipmentCount == null) s.startingEquipmentCount = (s.equipment || []).length;
-  if (!s.tutorial) s.tutorial = { seen: [], dismissed: true };
-  return s;
-}
-
-/**
- * Bring an older save forward. Each step is from one version to the next, so
- * a v1 save still loads after v4 ships.
- */
-function migrate(s) {
-  if (!s.version) {
-    throw new Error('Save has no version field; it cannot be safely loaded.');
-  }
-  if (s.version > SAVE_VERSION) {
-    throw new Error(
-      `Save is version ${s.version} but this build understands up to ${SAVE_VERSION}. ` +
-        'It was written by a newer version of the game.'
-    );
-  }
-  // v1 is current. Future migrations chain here:
-  //   if (s.version === 1) { ...; s.version = 2; }
-  return s;
-}
-
-// ---------------------------------------------------------------------------
-// Browser storage. Every access is wrapped: localStorage throws in private
-// windows and returns null when site data has been cleared, and a save system
-// that assumes it works will lose somebody's century.
-// ---------------------------------------------------------------------------
-
-function saveToStorage(state, storage = globalThis.localStorage) {
-  if (!storage) return { ok: false, reason: 'no storage available' };
-  try {
-    storage.setItem(SAVE_KEY, serialize(state));
-    return { ok: true };
-  } catch (err) {
-    return { ok: false, reason: err?.message || 'storage write refused' };
-  }
-}
-
-function loadFromStorage(storage = globalThis.localStorage) {
-  if (!storage) return { ok: false, reason: 'no storage available' };
-  let raw;
-  try {
-    raw = storage.getItem(SAVE_KEY);
-  } catch (err) {
-    return { ok: false, reason: err?.message || 'storage read refused' };
-  }
-  if (!raw) return { ok: false, reason: 'no saved game found' };
-  try {
-    return { ok: true, state: deserialize(raw) };
-  } catch (err) {
-    return { ok: false, reason: err?.message || 'saved game could not be read' };
-  }
-}
-
-function clearStorage(storage = globalThis.localStorage) {
-  try { storage?.removeItem(SAVE_KEY); return { ok: true }; }
-  catch (err) { return { ok: false, reason: err?.message }; }
-}
-
-
-
-return { newGame, ownedQuarters, isOver, serialize, deserialize, rehydrate, migrate, saveToStorage, loadFromStorage, clearStorage, SAVE_KEY, SAVE_VERSION, STATUS, ACRES_PER_QUARTER, quarterById, FIRST_YEAR, LAST_YEAR };
-})();
-
 __m["src/data/equipment.data.js"] = (function () {
 // Implements, power and buildings, 1875-2000.
 //
@@ -4616,6 +4367,34 @@ function feedRequired(state) {
   return { hay, grain };
 }
 
+/**
+ * What the herd will need by THIS winter, not what it needed standing in the
+ * yard when the grain was sold in the fall.
+ *
+ * phaseMarket sells the crop before phaseWinter breeds the flock, so a
+ * feed reservation sized to feedRequired() as it stands at market time is
+ * sized to last year's head count — and a flock like poultry, which can
+ * very nearly double in a season (breedRate 2.2), routinely outgrows a
+ * reservation made before that growth happened. The shortfall this produces
+ * is real, but it is not a shortfall the farm actually had; it is a
+ * reservation that was too small for a herd that did not exist yet when the
+ * reservation was made. Projects one season's natural increase with the
+ * same plain breedRate/mortality arithmetic phaseWinter uses (no trait
+ * adjustment — this is a reservation estimate, not the actual outcome) and
+ * sizes the requirement to that instead.
+ */
+function projectedFeedRequired(state) {
+  const projected = {};
+  for (const [id, count] of Object.entries(state.livestock || {})) {
+    const l = LIVESTOCK[id];
+    if (!l || !count) { projected[id] = count; continue; }
+    const born = Math.floor(count * l.breedRate * 0.5);
+    const died = Math.floor(count * l.mortality);
+    projected[id] = Math.max(0, count + born - died);
+  }
+  return feedRequired({ ...state, livestock: projected });
+}
+
 /** Animals that can be grazed rather than fed, given pasture acres. */
 /**
  * How much stock this farm can actually carry.
@@ -4956,7 +4735,269 @@ const LIVESTOCK_PRICE_CACHE = LIVESTOCK_PRICING;
 
 
 
-return { neutralConditions, fertilityFactor, newBreakingFactor, moistureFactor, weedControlLevel, weedFactor, techEffect, rotationFactor, varietyFactor, currentVariety, techYieldFactor, yieldPerAcre, draftPower, conditionFactor, implementsFor, bestImplement, bestBreaker, effectiveCapacity, labourForce, workingAge, workerUnits, seasonCapacity, travelSpeed, haulCapacity, transportPenalty, timelinessFactor, fieldLogistics, croppableAcres, breakableAcres, springDays, harvestDays, feedRequired, carryingCapacity, speciesCap, livestockUnits, grazingCapacity, landValue, equipmentPrice, equipmentValue, livestockValue, headPrice, granaryValue, totalDebt, debtService, propertyTax, netWorth, creditLimit, borrowingRate, livingCost, subsistenceOffset, annualWage, haulMiles, marketingCostPerBushel, farmSummary, BASE_SPRING_DAYS, BASE_HARVEST_DAYS, BASE_THRESHING_DAYS, HAND_METHODS, BASE_BREAKING_DAYS, clamp };
+return { neutralConditions, fertilityFactor, newBreakingFactor, moistureFactor, weedControlLevel, weedFactor, techEffect, rotationFactor, varietyFactor, currentVariety, techYieldFactor, yieldPerAcre, draftPower, conditionFactor, implementsFor, bestImplement, bestBreaker, effectiveCapacity, labourForce, workingAge, workerUnits, seasonCapacity, travelSpeed, haulCapacity, transportPenalty, timelinessFactor, fieldLogistics, croppableAcres, breakableAcres, springDays, harvestDays, feedRequired, projectedFeedRequired, carryingCapacity, speciesCap, livestockUnits, grazingCapacity, landValue, equipmentPrice, equipmentValue, livestockValue, headPrice, granaryValue, totalDebt, debtService, propertyTax, netWorth, creditLimit, borrowingRate, livingCost, subsistenceOffset, annualWage, haulMiles, marketingCostPerBushel, farmSummary, BASE_SPRING_DAYS, BASE_HARVEST_DAYS, BASE_THRESHING_DAYS, HAND_METHODS, BASE_BREAKING_DAYS, clamp };
+})();
+
+__m["src/engine/state.js"] = (function () {
+// Game state: its shape, how a new game is built, and how it is saved.
+//
+// The save key is a contract, not a label. `centennial-farm.save.v1` is fixed
+// from the first commit and carries an explicit version number, because a save
+// already sitting in somebody's browser refers to this string. Renaming it
+// silently orphans every game in progress; changing the shape without bumping
+// the version silently corrupts them. Migrations go in `migrate()` below.
+
+const { makeRng, streamFor } = __m["src/engine/rng.js"];
+const { generateTownship, seedNeighbours, quarterById, ACRES_PER_QUARTER } = __m["src/engine/land.js"];
+const { foundFamily } = __m["src/engine/family.js"];
+const { region: regionDef } = __m["src/data/regions.data.js"];
+const { background: backgroundDef } = __m["src/data/names.data.js"];
+const { difficulty: difficultyDef } = __m["src/data/difficulty.data.js"];
+const { surnamePool } = __m["src/data/names.data.js"];
+const { FIRST_YEAR, LAST_YEAR } = __m["src/data/prices.data.js"];
+const { projectedFeedRequired } = __m["src/engine/derive.js"];
+
+const SAVE_KEY = 'centennial-farm.save.v1';
+const SAVE_VERSION = 1;
+
+const STATUS = {
+  ACTIVE: 'active',
+  RUINED: 'ruined',       // foreclosed; the land is gone
+  LINE_ENDED: 'lineEnded', // no heir would or could take it on
+  COMPLETE: 'complete',   // reached 2000 still farming
+};
+
+/**
+ * Build a new game. Everything about the run is a pure function of
+ * (seed, difficulty, background), which is what makes a seed reproducible and
+ * what makes the balance harness meaningful.
+ */
+function newGame({ seed = 1, difficulty = 'settler', background = 'ontario' } = {}) {
+  const bg = backgroundDef(background);
+  const diff = difficultyDef(difficulty);
+  const reg = regionDef(bg.region);
+  const setup = streamFor(seed, FIRST_YEAR, 'setup');
+
+  const quarters = generateTownship(setup, reg);
+
+  // The home quarter: the one they filed on. It must be homestead-eligible,
+  // because that is the only kind a settler could get for the $10 fee.
+  const eligible = quarters.filter((q) => q.tenure === 'homestead');
+  const home = setup.pick(eligible);
+  home.owner = 'player';
+  home.ownerName = 'you';
+  home.yearAcquired = FIRST_YEAR;
+  home.acquiredBy = 'homestead';
+  home.brokenAcres = 0;
+  home.use = 'idle';
+
+  seedNeighbours(setup, quarters, surnamePool(bg.origin), home.id);
+
+  const family = foundFamily(setup, { backgroundDef: bg, year: FIRST_YEAR, difficultyDef: diff });
+
+  const equipment = bg.startingEquipment.map((type) => ({
+    type, count: 1, yearBought: FIRST_YEAR, condition: setup.float(0.6, 0.9),
+  }));
+
+  const livestock = {};
+  const draftFromBackground = {};
+  for (const [k, v] of Object.entries(bg.startingLivestock)) {
+    // Oxen and horses are power, not livestock — they live in `equipment`.
+    if (k === 'oxen' || k === 'horses') draftFromBackground[k] = v;
+    else livestock[k] = v;
+  }
+  for (const [type, count] of Object.entries(draftFromBackground)) {
+    equipment.push({ type, count, yearBought: FIRST_YEAR, condition: setup.float(0.7, 0.95) });
+  }
+
+  const state = {
+    version: SAVE_VERSION,
+    seed,
+    year: FIRST_YEAR,
+    status: STATUS.ACTIVE,
+
+    difficulty,
+    difficultyDef: diff,
+    background,
+    backgroundDef: bg,
+    region: bg.region,
+    regionDef: reg,
+    townshipLabel: reg.townshipLabel,
+    haulMiles: reg.initialHaulMiles,
+
+    quarters,
+    homeQuarterId: home.id,
+
+    family,
+
+    cash: Math.round(bg.startingCapital * diff.startingCapitalMult),
+    debts: [],
+    storeAccount: 0, // carried at the general store until the crop is sold
+    statuteDaysWorked: 0, // days owed the municipality on the roads, worked off
+    equipment,
+    livestock,
+    granary: {},
+    technologies: [],
+    wheatVariety: 'redFife',
+    hiredHands: 0,
+    standardOfLiving: 1,
+
+    // Flags set by history and never unset; modifiers expire.
+    flags: {
+      homesteadProved: false,
+      centennialEarned: false,
+      joinedPool: false,
+      compulsoryBoard: false,
+    },
+    modifiers: {},
+    activeEffects: [], // { effects, expiresAfter }
+
+    // Where the farm started, so the walkthrough can say "two years in" without
+    // hardcoding 1875 and without the UI keeping a second copy of it.
+    startYear: FIRST_YEAR,
+    startingEquipmentCount: equipment.length,
+    // The walkthrough's progress rides in the SAVE, not in browser storage:
+    // resuming a game in 1932 should not start explaining what sod is, and a
+    // second game on the same device should teach a new player again.
+    tutorial: { seen: [], dismissed: false },
+
+    // Per-year record. This is the ledger the player reads and the data the
+    // balance harness measures, so it is built by the engine, never by the UI.
+    ledger: [],
+    log: [],
+    pendingChoice: null,
+
+    // Set when the run ends, for the summary screen and the harness.
+    outcome: null,
+  };
+
+  // A settler did not arrive with an empty loft. Whatever oxen or a first
+  // few hens they brought, they brought (or bought, out of the capital
+  // already charged above) enough to see the animals through to a first
+  // cutting — the granary otherwise starts at exactly zero, and the first
+  // winter's feed check runs before there has been a single harvest to fill
+  // it, which made the very first year's "short of winter feed" forced
+  // sale unconditional: nothing a player did in that first spring and
+  // summer could have put hay in a bin that starts the game empty.
+  const starterFeed = projectedFeedRequired(state);
+  if (starterFeed.hay > 0) state.granary.hay = starterFeed.hay;
+  if (starterFeed.grain > 0) state.granary.oats = starterFeed.grain;
+
+  state.log.push({
+    year: FIRST_YEAR,
+    kind: 'start',
+    text:
+      `${family.members[0].name} ${family.surname} filed on ${home.quarter} ${home.section} ` +
+      `in ${reg.townshipLabel}, ${reg.name}. One hundred and sixty acres of unbroken prairie, ` +
+      `a ten dollar filing fee, and three years to prove it up.`,
+  });
+
+  return state;
+}
+
+/** Quarters the player holds. */
+function ownedQuarters(state) {
+  return state.quarters.filter((q) => q.owner === 'player');
+}
+
+function isOver(state) {
+  return state.status !== STATUS.ACTIVE;
+}
+
+// ---------------------------------------------------------------------------
+// Saving
+// ---------------------------------------------------------------------------
+
+// Definitions are re-attached on load rather than stored: they are code, and a
+// save that carries a stale copy of the difficulty table would quietly play by
+// last version's rules.
+const DERIVED_KEYS = ['difficultyDef', 'backgroundDef', 'regionDef'];
+
+function serialize(state) {
+  const out = { ...state };
+  for (const k of DERIVED_KEYS) delete out[k];
+  return JSON.stringify(out);
+}
+
+function deserialize(json) {
+  const raw = typeof json === 'string' ? JSON.parse(json) : json;
+  const migrated = migrate(raw);
+  return rehydrate(migrated);
+}
+
+/** Re-attach the code-side definitions a save deliberately does not carry. */
+function rehydrate(s) {
+  s.difficultyDef = difficultyDef(s.difficulty);
+  s.backgroundDef = backgroundDef(s.background);
+  s.regionDef = regionDef(s.region);
+  // Fields added after this save was written. A game in progress from an
+  // earlier build must keep loading — the walkthrough simply does not run for
+  // it, which is right: it is already years past anything it would explain.
+  if (s.startYear == null) s.startYear = FIRST_YEAR;
+  if (s.startingEquipmentCount == null) s.startingEquipmentCount = (s.equipment || []).length;
+  if (!s.tutorial) s.tutorial = { seen: [], dismissed: true };
+  return s;
+}
+
+/**
+ * Bring an older save forward. Each step is from one version to the next, so
+ * a v1 save still loads after v4 ships.
+ */
+function migrate(s) {
+  if (!s.version) {
+    throw new Error('Save has no version field; it cannot be safely loaded.');
+  }
+  if (s.version > SAVE_VERSION) {
+    throw new Error(
+      `Save is version ${s.version} but this build understands up to ${SAVE_VERSION}. ` +
+        'It was written by a newer version of the game.'
+    );
+  }
+  // v1 is current. Future migrations chain here:
+  //   if (s.version === 1) { ...; s.version = 2; }
+  return s;
+}
+
+// ---------------------------------------------------------------------------
+// Browser storage. Every access is wrapped: localStorage throws in private
+// windows and returns null when site data has been cleared, and a save system
+// that assumes it works will lose somebody's century.
+// ---------------------------------------------------------------------------
+
+function saveToStorage(state, storage = globalThis.localStorage) {
+  if (!storage) return { ok: false, reason: 'no storage available' };
+  try {
+    storage.setItem(SAVE_KEY, serialize(state));
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, reason: err?.message || 'storage write refused' };
+  }
+}
+
+function loadFromStorage(storage = globalThis.localStorage) {
+  if (!storage) return { ok: false, reason: 'no storage available' };
+  let raw;
+  try {
+    raw = storage.getItem(SAVE_KEY);
+  } catch (err) {
+    return { ok: false, reason: err?.message || 'storage read refused' };
+  }
+  if (!raw) return { ok: false, reason: 'no saved game found' };
+  try {
+    return { ok: true, state: deserialize(raw) };
+  } catch (err) {
+    return { ok: false, reason: err?.message || 'saved game could not be read' };
+  }
+}
+
+function clearStorage(storage = globalThis.localStorage) {
+  try { storage?.removeItem(SAVE_KEY); return { ok: true }; }
+  catch (err) { return { ok: false, reason: err?.message }; }
+}
+
+
+
+return { newGame, ownedQuarters, isOver, serialize, deserialize, rehydrate, migrate, saveToStorage, loadFromStorage, clearStorage, SAVE_KEY, SAVE_VERSION, STATUS, ACRES_PER_QUARTER, quarterById, FIRST_YEAR, LAST_YEAR };
 })();
 
 __m["src/data/history.data.js"] = (function () {
@@ -7172,7 +7213,7 @@ __m["src/engine/turn.js"] = (function () {
 
 const { streamFor } = __m["src/engine/rng.js"];
 const { STATUS, ownedQuarters } = __m["src/engine/state.js"];
-const { yieldPerAcre, neutralConditions, seasonCapacity, springDays, harvestDays, feedRequired, grazingCapacity, livingCost, annualWage, labourForce, netWorth, totalDebt, farmSummary, bestImplement, bestBreaker, clamp, currentVariety, equipmentPrice, propertyTax, conditionFactor, creditLimit, croppableAcres, breakableAcres, weedControlLevel, carryingCapacity, livestockUnits, speciesCap, draftPower, techEffect, BASE_THRESHING_DAYS, BASE_BREAKING_DAYS } = __m["src/engine/derive.js"];
+const { yieldPerAcre, neutralConditions, seasonCapacity, springDays, harvestDays, feedRequired, projectedFeedRequired, grazingCapacity, livingCost, annualWage, labourForce, netWorth, totalDebt, farmSummary, bestImplement, bestBreaker, clamp, currentVariety, equipmentPrice, propertyTax, conditionFactor, creditLimit, croppableAcres, breakableAcres, weedControlLevel, carryingCapacity, livestockUnits, speciesCap, draftPower, techEffect, BASE_THRESHING_DAYS, BASE_BREAKING_DAYS } = __m["src/engine/derive.js"];
 const { ACRES_PER_QUARTER, playerQuarters, quarterById, workableAcres, breakingCostPerAcre, quarterValueFactor, roadFor, distanceFromYard, settledBrokenAcres, maxBrokenAcres, forageAcres } = __m["src/engine/land.js"];
 const { crop: cropDef, CROPS, cropsAvailable, WHEAT_VARIETIES } = __m["src/data/crops.data.js"];
 const { equipment: equipDef, EQUIPMENT } = __m["src/data/equipment.data.js"];
@@ -8141,12 +8182,19 @@ function phaseMarket(state, record, plan) {
   // Sell the surplus and hold back the seed and the feed. A farm with no
   // marketing plan still sells its crop — it does not sit on it by accident —
   // but it does not sell the oats the horses eat either.
+  //
+  // The feed reservation is sized to projectedFeedRequired(), not
+  // feedRequired() as the herd stands at market time: this phase runs
+  // BEFORE phaseWinter breeds the flock, so a reservation against today's
+  // head count is a reservation for a herd that is about to grow, most
+  // visibly for poultry, which can nearly double in a season. Selling the
+  // difference as "surplus" reserved a shortfall that had not happened yet.
   const seededByCrop = {};
   for (const l of record.harvest.lines || []) {
     seededByCrop[l.cropId] = (seededByCrop[l.cropId] || 0) + l.harvestedAcres;
   }
   const defaults = defaultSaleOrders(state, {
-    feedRequired: feedRequired(state),
+    feedRequired: projectedFeedRequired(state),
     seededByCrop,
   });
   // The player's marketing choice is a STANCE per crop layered onto the
@@ -8554,6 +8602,32 @@ function phaseWinter(state, record, plan) {
   const rng = streamFor(state.seed, state.year, 'winter');
   if (state.status !== STATUS.ACTIVE) return;
 
+  // --- livestock increase, bounded by what the place can carry --------------
+  //
+  // Moved ahead of the feed check below. Bred FIRST, the shortfall a farm is
+  // actually facing this winter is sized against the herd it actually has —
+  // calves and chicks included, since they eat too — and a forced sale
+  // rightsizes THAT population. Bred after, as this used to be, the animals
+  // just sold for want of feed were replaced by new ones in the same
+  // breath, in the same year, before the ledger even closed: the note said
+  // "6 head sold," the account got the cash, and the head count next season
+  // read the same or higher, because breeding had already put the loss
+  // back. Nothing was wrong with the sale — it was real, and spent — but it
+  // never showed, and the shortfall that caused it was never actually
+  // relieved, which is why it kept recurring: a farm that can't feed eight
+  // hens never got the chance to carry fewer than eight.
+  const stockman = state.operatorTraits?.includes('stockman');
+  const stockYieldMult = stockman ? traitEffect('stockman', 'livestockYield') : 1;
+  const stockMortalityMult = stockman ? traitEffect('stockman', 'livestockMortality') : 1;
+  for (const [id, count] of Object.entries(state.livestock)) {
+    if (!count) continue;
+    const l = LIVESTOCK[id];
+    if (!l) continue;
+    const born = Math.floor(count * l.breedRate * 0.5 * stockYieldMult);
+    const died = Math.floor(count * l.mortality * stockMortalityMult);
+    state.livestock[id] = Math.max(0, count + born - died);
+  }
+
   // --- feed the stock -------------------------------------------------------
   const required = feedRequired(state);
   const conditions = state.yearConditions || neutralConditions();
@@ -8573,17 +8647,20 @@ function phaseWinter(state, record, plan) {
       (fed.hayShort / Math.max(1, required.hay) + fed.grainShort / Math.max(1, required.grain)) / 2, 0, 1
     );
     let soldTotal = 0;
+    let proceeds = 0;
     for (const [id, count] of Object.entries(state.livestock)) {
       if (!count) continue;
       const sell = Math.ceil(count * shortfallRatio * 0.7);
       if (sell <= 0) continue;
       const each = interpAnchors(LIVESTOCK_PRICING[id], state.year) * 0.75; // everyone is selling
       state.livestock[id] = count - sell;
-      state.cash += each * sell;
+      const gross = each * sell;
+      state.cash += gross;
+      proceeds += gross;
       soldTotal += sell;
     }
     if (soldTotal > 0) {
-      record.income.feedShortSale = (record.income.feedShortSale || 0);
+      record.income.feedShortSale = (record.income.feedShortSale || 0) + proceeds;
       record.notes.push(
         `Short of winter feed: ${soldTotal} head sold in November at what the buyers felt like paying.`
       );
@@ -8721,19 +8798,6 @@ function phaseWinter(state, record, plan) {
         record.income.surplusStockSale = (record.income.surplusStockSale || 0) + price;
       }
     }
-  }
-
-  // --- livestock increase, bounded by what the place can carry --------------
-  const stockman = state.operatorTraits?.includes('stockman');
-  const stockYieldMult = stockman ? traitEffect('stockman', 'livestockYield') : 1;
-  const stockMortalityMult = stockman ? traitEffect('stockman', 'livestockMortality') : 1;
-  for (const [id, count] of Object.entries(state.livestock)) {
-    if (!count) continue;
-    const l = LIVESTOCK[id];
-    if (!l) continue;
-    const born = Math.floor(count * l.breedRate * 0.5 * stockYieldMult);
-    const died = Math.floor(count * l.mortality * stockMortalityMult);
-    state.livestock[id] = Math.max(0, count + born - died);
   }
 
   // Species that are limited by a building rather than by grass are trimmed to
