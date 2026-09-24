@@ -12,6 +12,7 @@ import {
   grazingCapacity, netWorth, landValue, equipmentValue, livestockValue,
   granaryValue, labourForce, draftPower, equipmentPrice, currentVariety,
   bestImplement, breakableAcres, seasonCapacity, fieldLogistics, timelinessFactor,
+  annualWage, implementsFor,
 } from '../engine/derive.js';
 import { offeredPrograms, isEnrolled, taxReliefLabel, PROGRAM_LIST } from '../engine/programs.js';
 import { ROAD_WORKS } from '../data/roads.data.js';
@@ -243,9 +244,26 @@ export function renderPlan(state, draft) {
   const breakable = breakableAcres(state);
   out.push(row('Acres the outfit can crop', `${Math.round(cap.acres)} ac`));
   out.push(row('Limited by', cap.bottleneck));
+  // What actually sets the pace for the bottleneck operation: ONE implement
+  // — the single best one owned, never the sum of however many are in the
+  // yard — run by as many hands as there are machines to put them on. A
+  // second, third, or twentieth plow of a type already owned adds nothing;
+  // it is crews (hands, capped at one per distinct implement TYPE for the
+  // operation) and that one implement's own rated capacity that set the
+  // pace. Surfaced here because "I own two dozen plows and it isn't
+  // helping" is not a bug report, it is this arithmetic with no way to see
+  // it.
+  const bottleneckOp = cap.bottleneck === 'tillage' ? 'till' : cap.bottleneck === 'seeding' ? 'seed' : 'harvest';
+  const bottleneckCap = seasonCapacity(state, bottleneckOp, 1);
+  const bottleneckTypes = implementsFor(state, bottleneckOp).length;
   out.push(
     `<div style="font-size:.76rem;color:var(--ink-3);margin:-2px 0 6px">` +
-      `${cap.bottleneck === 'tillage' ? 'A faster plow or a team that can pull a bigger one raises this.'
+      `${bottleneckCap.implement ? `Set by the ${esc(bottleneckCap.implement.name || bottleneckCap.implement.id)}, ` +
+        `run ${bottleneckCap.crews} up at once — one crew per hand, up to one per distinct kind of ` +
+        `${esc(cap.bottleneck)} implement you own (you have ${bottleneckTypes}). Owning more of the ` +
+        `SAME implement does not add another crew; a faster single implement, another distinct kind ` +
+        `to run alongside it, or another hand to run one all raise this.`
+        : cap.bottleneck === 'tillage' ? 'A faster plow or a team that can pull a bigger one raises this.'
         : cap.bottleneck === 'seeding' ? 'A drill, or a better one, raises this.'
         : 'A faster binder or combine raises this.'} ` +
       `Hay and pasture do not draw on it at all — only grain competes for these days.</div>`
@@ -277,7 +295,21 @@ export function renderPlan(state, draft) {
     }
   }
   out.push(row('Draft power', `${draftPower(state).toFixed(1)} horse`));
-  out.push(row('Hands available', labourForce(state).units.toFixed(1)));
+  const labour = labourForce(state);
+  out.push(row('Hands available', `${labour.units.toFixed(1)}${labour.hired ? ` (${labour.family.toFixed(1)} family + ${labour.hired} hired)` : ''}`));
+  // The one player-facing lever for more crews when the family itself is
+  // the cap — engine/turn.js has read plan.hiredHands into a persisted
+  // state.hiredHands since before this session (the bot hires against
+  // exactly this shortfall every year); there was simply no control for a
+  // player to set it themselves.
+  const hiredVal = draft.hiredHands !== undefined ? draft.hiredHands : (state.hiredHands || 0);
+  out.push(
+    `<div class="row"><span class="k">Hire hands</span>
+       <span class="v" style="display:flex;align-items:center;gap:6px">
+         <input type="number" min="0" step="1" value="${hiredVal}" data-hired-hands style="width:52px" />
+         <span style="font-size:.7rem;color:var(--ink-3)">@ ${money(annualWage(state))}/yr each</span>
+       </span></div>`
+  );
   out.push('</section>');
 
   // --- fields ---

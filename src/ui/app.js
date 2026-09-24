@@ -691,6 +691,10 @@ function onChange(e) {
     draft.livestockCap[t.dataset.livestockCap] = t.value === '' ? null : Math.max(0, Math.floor(Number(t.value) || 0));
     return;
   }
+  if (t.dataset.hiredHands != null) {
+    draft.hiredHands = Math.max(0, Math.floor(Number(t.value) || 0));
+    return;
+  }
 }
 
 /**
