@@ -65,3 +65,36 @@ test('a background\'s single starting breeding animal survives its first winter'
   runYear(state, {});
   assert.ok((state.livestock.dairyCow || 0) >= 1, 'the founder\'s only cow should not be wiped out in year one');
 });
+
+// A player-set "keep at most" ceiling per species, requested after the fix
+// above: with the feed-shortfall cull now real, an unchecked flock (poultry
+// breeds close to doubling a season) just grows into the next shortfall
+// anyway. This lets a player size the herd on purpose instead.
+test('a livestock cap sells the excess at the ordinary price, before any feed check runs', () => {
+  const state = newGame({ seed: 1, difficulty: 'settler', background: 'ontario' });
+  state.livestock.chickens = 30;
+  state.granary = { hay: 500, oats: 500 }; // ample feed: isolates the cap from the feed-shortfall cull
+  const before = state.cash;
+  const { record } = runYear(state, { livestockCap: { chickens: 10 } });
+  assert.equal(state.livestock.chickens, 10);
+  assert.ok(state.cash > before, 'the cull should be a sale, not a loss');
+  assert.ok(record.notes.some((n) => n.includes('Kept the poultry to 10')));
+  assert.ok(!record.notes.some((n) => n.includes('Short of winter feed')), 'ample feed should mean no separate shortfall sale');
+});
+
+test('a livestock cap is a standing setting: it holds in the next year without being resent', () => {
+  const state = newGame({ seed: 1, difficulty: 'settler', background: 'ontario' });
+  state.livestock.chickens = 5;
+  runYear(state, { livestockCap: { chickens: 8 } });
+  assert.equal(state.livestockCap.chickens, 8);
+  runYear(state, {}); // no plan override this year — the cap should still apply
+  assert.ok(state.livestock.chickens <= 8, `cap should still hold: had ${state.livestock.chickens}`);
+});
+
+test('sending a null cap clears a previously set one', () => {
+  const state = newGame({ seed: 1, difficulty: 'settler', background: 'ontario' });
+  runYear(state, { livestockCap: { chickens: 5 } });
+  assert.equal(state.livestockCap.chickens, 5);
+  runYear(state, { livestockCap: { chickens: null } });
+  assert.equal(state.livestockCap.chickens, undefined);
+});

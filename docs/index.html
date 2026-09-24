@@ -4836,6 +4836,7 @@ function newGame({ seed = 1, difficulty = 'settler', background = 'ontario' } = 
     statuteDaysWorked: 0, // days owed the municipality on the roads, worked off
     equipment,
     livestock,
+    livestockCap: {}, // player's own "keep at most N" ceiling per species; see phaseWinter
     granary: {},
     technologies: [],
     wheatVariety: 'redFife',
@@ -4936,6 +4937,7 @@ function rehydrate(s) {
   if (s.startYear == null) s.startYear = FIRST_YEAR;
   if (s.startingEquipmentCount == null) s.startingEquipmentCount = (s.equipment || []).length;
   if (!s.tutorial) s.tutorial = { seen: [], dismissed: true };
+  if (!s.livestockCap) s.livestockCap = {};
   return s;
 }
 
@@ -7652,6 +7654,18 @@ function phaseSpring(state, record, plan) {
     state.hiredHands = Math.max(0, Math.floor(plan.hiredHands));
   }
 
+  // A standing "keep at most" ceiling per species, not a one-time order —
+  // it persists on state until the player changes or clears it, same as
+  // hiredHands above, and is acted on every winter (see phaseWinter) rather
+  // than resolved here.
+  if (plan.livestockCap) {
+    state.livestockCap = state.livestockCap || {};
+    for (const [id, cap] of Object.entries(plan.livestockCap)) {
+      if (cap === null) delete state.livestockCap[id];
+      else state.livestockCap[id] = Math.max(0, Math.floor(cap));
+    }
+  }
+
   // --- improvements ---------------------------------------------------------
   for (const imp of plan.improvements || []) {
     const q = quarterById(state.quarters, imp.quarterId);
@@ -8628,6 +8642,33 @@ function phaseWinter(state, record, plan) {
     state.livestock[id] = Math.max(0, count + born - died);
   }
 
+  // --- keep at most, the player's own standing cap ---------------------------
+  //
+  // Applied before the feed check below on purpose: a herd trimmed to what
+  // the player actually wants to carry needs less feed to winter, so a cap
+  // set for its own sake (a flock this size and no bigger) can incidentally
+  // clear a shortfall that would otherwise have forced an unplanned sale on
+  // top of it. This is an ordinary fall sale at the going rate, not the
+  // panicked "everyone is selling" price the feed-shortage sale further down
+  // pays — the player chose this, nobody is dumping stock at a loss.
+  for (const [id, cap] of Object.entries(state.livestockCap || {})) {
+    if (!(cap >= 0)) continue;
+    const have = state.livestock[id] || 0;
+    const sell = have - cap;
+    if (sell <= 0) continue;
+    const l = LIVESTOCK[id];
+    if (!l) continue;
+    const each = interpAnchors(LIVESTOCK_PRICING[id], state.year);
+    const gross = each * sell;
+    state.livestock[id] = cap;
+    state.cash += gross;
+    record.income.plannedStockSale = (record.income.plannedStockSale || 0) + gross;
+    // A per-head price here would round to the indistinguishable "$0" for a
+    // sub-dollar bird under money()'s whole-dollar display — the total is
+    // never that small, so show the total.
+    record.notes.push(`Kept the ${l.name.toLowerCase()} to ${cap}: sold ${sell} for $${Math.round(gross).toLocaleString()}.`);
+  }
+
   // --- feed the stock -------------------------------------------------------
   const required = feedRequired(state);
   const conditions = state.yearConditions || neutralConditions();
@@ -9565,7 +9606,7 @@ __m["src/ui/panels.js"] = (function () {
 const { farmSummary, croppableAcres, yieldPerAcre, neutralConditions, totalDebt, debtService, creditLimit, borrowingRate, livingCost, feedRequired, grazingCapacity, netWorth, landValue, equipmentValue, livestockValue, granaryValue, labourForce, draftPower, equipmentPrice, currentVariety, bestImplement, breakableAcres, seasonCapacity, fieldLogistics, timelinessFactor } = __m["src/engine/derive.js"];
 const { offeredPrograms, isEnrolled, taxReliefLabel, PROGRAM_LIST } = __m["src/engine/programs.js"];
 const { ROAD_WORKS } = __m["src/data/roads.data.js"];
-const { playerQuarters, legalDescription, ACRES_PER_QUARTER, quarterById, distanceFromYard, roadFor, forageAcres } = __m["src/engine/land.js"];
+const { playerQuarters, legalDescription, ACRES_PER_QUARTER, quarterById, distanceFromYard, roadFor, forageAcres, maxBrokenAcres } = __m["src/engine/land.js"];
 const { CROPS, cropsAvailable, WHEAT_VARIETIES } = __m["src/data/crops.data.js"];
 const { EQUIPMENT, equipmentAvailable } = __m["src/data/equipment.data.js"];
 const { TECHNOLOGIES } = __m["src/data/tech.data.js"];
@@ -9890,14 +9931,28 @@ function renderPlan(state, draft) {
   out.push('</section>');
 
   // --- breaking ---
-  const withSod = owned.filter((q) => q.brokenAcres < ACRES_PER_QUARTER - 1);
+  //
+  // Against maxBrokenAcres(q), not the bare 160 \u2014 a quarter never breaks out
+  // to its full section, on any soil, because a yard, a road allowance, a
+  // slough that will not drain, and a stone pile all sit inside it too. Used
+  // to filter and size this section against the raw acreage instead, which
+  // kept a quarter that had already reached its real ceiling showing "11 ac
+  // of sod left" forever: the plan defaulted to breaking it, the engine
+  // quietly refused since there was nowhere left to put a plow, and the same
+  // few acres came back unbroken every single year with no explanation.
+  const withSod = owned.filter((q) => q.brokenAcres < maxBrokenAcres(q) - 1);
   out.push('<section><h3>Breaking</h3>');
   if (!withSod.length) {
-    out.push('<div class="empty">Every acre you own is broken. More land is the only way to grow now.</div>');
+    out.push(
+      '<div class="empty">Every acre that will ever come under the plow already has. ' +
+        'A quarter keeps a yard, a road allowance, and its rough corners regardless \u2014 ' +
+        'more land is the only way to grow now.</div>'
+    );
   } else if (breakable.acres < 1) {
     out.push(
-      `<div class="empty">There are ${Math.round(sum.acresOwned - sum.acresBroken)} acres of sod left, ` +
-        'but the outfit cannot turn any of it this year. Breaking takes a plow and a team.</div>'
+      `<div class="empty">There are ${Math.round(withSod.reduce((s, q) => s + (maxBrokenAcres(q) - q.brokenAcres), 0))} ` +
+        'acres of sod left that could still be broken, but the outfit cannot turn any of it this year. ' +
+        'Breaking takes a plow and a team.</div>'
     );
   } else {
     out.push(
@@ -9907,7 +9962,7 @@ function renderPlan(state, draft) {
     );
     out.push('<div class="fields">');
     for (const q of withSod) {
-      const room = Math.round(ACRES_PER_QUARTER - q.brokenAcres);
+      const room = Math.round(maxBrokenAcres(q) - q.brokenAcres);
       out.push(
         `<div class="field">
            <div><div class="nm">${esc(legalDescription(q, state.townshipLabel))}</div>
@@ -10157,12 +10212,25 @@ function renderMarket(state, draft) {
     const have = state.livestock[l.id] || 0;
     const orderedBuy = draft.buyLivestock?.[l.id] || 0;
     const orderedSell = draft.sellLivestock?.[l.id] || 0;
+    // A standing ceiling, not a one-time order: shows what is already set
+    // (state.livestockCap) unless the player has typed something new this
+    // turn (draft.livestockCap), and stays in force year to year until
+    // changed or cleared — see phaseWinter, where it sells any excess at
+    // the ordinary price before feed is ever checked.
+    const capVal = draft.livestockCap?.[l.id] !== undefined
+      ? draft.livestockCap[l.id] : state.livestockCap?.[l.id];
     out.push(
       `<div class="field${orderedBuy || orderedSell ? ' sel' : ''}">
          <div><div class="nm">${esc(l.name)} <span class="pill">${have} head</span>
              ${orderedBuy ? ` <span class="pill good">buying ${orderedBuy}</span>` : ''}
-             ${orderedSell ? ` <span class="pill warn">selling ${orderedSell}</span>` : ''}</div>
-           <div class="meta">${money(price)} each &middot; ${esc(l.note)}</div></div>
+             ${orderedSell ? ` <span class="pill warn">selling ${orderedSell}</span>` : ''}
+             ${capVal != null ? ` <span class="pill">cap ${capVal}</span>` : ''}</div>
+           <div class="meta">${money(price)} each &middot; ${esc(l.note)}</div>
+           <div style="margin-top:3px;display:flex;align-items:center;gap:5px;font-size:.72rem;color:var(--ink-3)">
+             keep at most
+             <input type="number" min="0" step="1" placeholder="no cap" value="${capVal ?? ''}"
+                    data-livestock-cap="${l.id}" style="width:58px" />
+           </div></div>
          <div style="display:flex;gap:4px">
            <button class="btn sm" data-buy-stock="${l.id}" ${price > cash ? 'disabled' : ''}>
              ${orderedBuy ? 'buy another' : 'buy'}</button>
@@ -10778,7 +10846,7 @@ __m["src/ui/app.js"] = (function () {
 const { newGame, STATUS, saveToStorage, loadFromStorage, clearStorage, serialize, deserialize } = __m["src/engine/state.js"];
 const { runYear } = __m["src/engine/turn.js"];
 const { farmSummary, netWorth, totalDebt, croppableAcres, breakableAcres } = __m["src/engine/derive.js"];
-const { playerQuarters, legalDescription, quarterById } = __m["src/engine/land.js"];
+const { playerQuarters, legalDescription, quarterById, maxBrokenAcres } = __m["src/engine/land.js"];
 const { operator, fullName, age, pendingLifeChoices } = __m["src/engine/family.js"];
 const { historyFor } = __m["src/data/history.data.js"];
 const { CROPS } = __m["src/data/crops.data.js"];
@@ -10835,6 +10903,7 @@ function emptyDraft() {
     loans: [], improvements: [], fileHomestead: null, writeWill: null,
     roadWorks: [], takeUpPrograms: [],
     choiceResponse: {}, lifeChoices: {}, familyStance: {}, grainStance: {},
+    livestockCap: {},
   };
 }
 
@@ -10857,7 +10926,13 @@ function freshDraft(s) {
   // is nobody's idea of a plan.
   for (const q of playerQuarters(s.quarters)) {
     if (left < 1) break;
-    const room = 160 - q.brokenAcres;
+    // The true ceiling, not the bare 160 acres — a quarter carries a yard,
+    // a road allowance, sloughs that never drain, and a stone pile, so
+    // maxBrokenAcres(q) can sit well under 160 depending on soil. Using the
+    // raw acreage here kept suggesting a few more acres of breaking every
+    // year on ground that was already at its real limit, which the engine
+    // would then quietly refuse — the plan asked for sod that was not there.
+    const room = maxBrokenAcres(q) - q.brokenAcres;
     if (room < 1) continue;
     const take = Math.min(room, left);
     d.breakAcres[q.id] = Math.round(take);
@@ -11441,6 +11516,13 @@ function onChange(e) {
     draft.breakAcres[t.dataset.break] = v;
     // Deliberately no re-render: re-rendering on every keystroke destroys the
     // input the player is typing in, and the value is already captured.
+    return;
+  }
+  if (t.dataset.livestockCap) {
+    draft.livestockCap = draft.livestockCap || {};
+    // An emptied field clears the standing cap (null, read by phaseSpring as
+    // "remove it"), not zero — zero would sell the whole species off.
+    draft.livestockCap[t.dataset.livestockCap] = t.value === '' ? null : Math.max(0, Math.floor(Number(t.value) || 0));
     return;
   }
 }

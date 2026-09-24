@@ -17,7 +17,7 @@ import { offeredPrograms, isEnrolled, taxReliefLabel, PROGRAM_LIST } from '../en
 import { ROAD_WORKS } from '../data/roads.data.js';
 import {
   playerQuarters, legalDescription, ACRES_PER_QUARTER, quarterById,
-  distanceFromYard, roadFor, forageAcres,
+  distanceFromYard, roadFor, forageAcres, maxBrokenAcres,
 } from '../engine/land.js';
 import { CROPS, cropsAvailable, WHEAT_VARIETIES } from '../data/crops.data.js';
 import { EQUIPMENT, equipmentAvailable } from '../data/equipment.data.js';
@@ -343,14 +343,28 @@ export function renderPlan(state, draft) {
   out.push('</section>');
 
   // --- breaking ---
-  const withSod = owned.filter((q) => q.brokenAcres < ACRES_PER_QUARTER - 1);
+  //
+  // Against maxBrokenAcres(q), not the bare 160 \u2014 a quarter never breaks out
+  // to its full section, on any soil, because a yard, a road allowance, a
+  // slough that will not drain, and a stone pile all sit inside it too. Used
+  // to filter and size this section against the raw acreage instead, which
+  // kept a quarter that had already reached its real ceiling showing "11 ac
+  // of sod left" forever: the plan defaulted to breaking it, the engine
+  // quietly refused since there was nowhere left to put a plow, and the same
+  // few acres came back unbroken every single year with no explanation.
+  const withSod = owned.filter((q) => q.brokenAcres < maxBrokenAcres(q) - 1);
   out.push('<section><h3>Breaking</h3>');
   if (!withSod.length) {
-    out.push('<div class="empty">Every acre you own is broken. More land is the only way to grow now.</div>');
+    out.push(
+      '<div class="empty">Every acre that will ever come under the plow already has. ' +
+        'A quarter keeps a yard, a road allowance, and its rough corners regardless \u2014 ' +
+        'more land is the only way to grow now.</div>'
+    );
   } else if (breakable.acres < 1) {
     out.push(
-      `<div class="empty">There are ${Math.round(sum.acresOwned - sum.acresBroken)} acres of sod left, ` +
-        'but the outfit cannot turn any of it this year. Breaking takes a plow and a team.</div>'
+      `<div class="empty">There are ${Math.round(withSod.reduce((s, q) => s + (maxBrokenAcres(q) - q.brokenAcres), 0))} ` +
+        'acres of sod left that could still be broken, but the outfit cannot turn any of it this year. ' +
+        'Breaking takes a plow and a team.</div>'
     );
   } else {
     out.push(
@@ -360,7 +374,7 @@ export function renderPlan(state, draft) {
     );
     out.push('<div class="fields">');
     for (const q of withSod) {
-      const room = Math.round(ACRES_PER_QUARTER - q.brokenAcres);
+      const room = Math.round(maxBrokenAcres(q) - q.brokenAcres);
       out.push(
         `<div class="field">
            <div><div class="nm">${esc(legalDescription(q, state.townshipLabel))}</div>
@@ -610,12 +624,25 @@ export function renderMarket(state, draft) {
     const have = state.livestock[l.id] || 0;
     const orderedBuy = draft.buyLivestock?.[l.id] || 0;
     const orderedSell = draft.sellLivestock?.[l.id] || 0;
+    // A standing ceiling, not a one-time order: shows what is already set
+    // (state.livestockCap) unless the player has typed something new this
+    // turn (draft.livestockCap), and stays in force year to year until
+    // changed or cleared — see phaseWinter, where it sells any excess at
+    // the ordinary price before feed is ever checked.
+    const capVal = draft.livestockCap?.[l.id] !== undefined
+      ? draft.livestockCap[l.id] : state.livestockCap?.[l.id];
     out.push(
       `<div class="field${orderedBuy || orderedSell ? ' sel' : ''}">
          <div><div class="nm">${esc(l.name)} <span class="pill">${have} head</span>
              ${orderedBuy ? ` <span class="pill good">buying ${orderedBuy}</span>` : ''}
-             ${orderedSell ? ` <span class="pill warn">selling ${orderedSell}</span>` : ''}</div>
-           <div class="meta">${money(price)} each &middot; ${esc(l.note)}</div></div>
+             ${orderedSell ? ` <span class="pill warn">selling ${orderedSell}</span>` : ''}
+             ${capVal != null ? ` <span class="pill">cap ${capVal}</span>` : ''}</div>
+           <div class="meta">${money(price)} each &middot; ${esc(l.note)}</div>
+           <div style="margin-top:3px;display:flex;align-items:center;gap:5px;font-size:.72rem;color:var(--ink-3)">
+             keep at most
+             <input type="number" min="0" step="1" placeholder="no cap" value="${capVal ?? ''}"
+                    data-livestock-cap="${l.id}" style="width:58px" />
+           </div></div>
          <div style="display:flex;gap:4px">
            <button class="btn sm" data-buy-stock="${l.id}" ${price > cash ? 'disabled' : ''}>
              ${orderedBuy ? 'buy another' : 'buy'}</button>

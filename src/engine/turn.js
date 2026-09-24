@@ -467,6 +467,18 @@ function phaseSpring(state, record, plan) {
     state.hiredHands = Math.max(0, Math.floor(plan.hiredHands));
   }
 
+  // A standing "keep at most" ceiling per species, not a one-time order —
+  // it persists on state until the player changes or clears it, same as
+  // hiredHands above, and is acted on every winter (see phaseWinter) rather
+  // than resolved here.
+  if (plan.livestockCap) {
+    state.livestockCap = state.livestockCap || {};
+    for (const [id, cap] of Object.entries(plan.livestockCap)) {
+      if (cap === null) delete state.livestockCap[id];
+      else state.livestockCap[id] = Math.max(0, Math.floor(cap));
+    }
+  }
+
   // --- improvements ---------------------------------------------------------
   for (const imp of plan.improvements || []) {
     const q = quarterById(state.quarters, imp.quarterId);
@@ -1441,6 +1453,33 @@ function phaseWinter(state, record, plan) {
     const born = Math.floor(count * l.breedRate * 0.5 * stockYieldMult);
     const died = Math.floor(count * l.mortality * stockMortalityMult);
     state.livestock[id] = Math.max(0, count + born - died);
+  }
+
+  // --- keep at most, the player's own standing cap ---------------------------
+  //
+  // Applied before the feed check below on purpose: a herd trimmed to what
+  // the player actually wants to carry needs less feed to winter, so a cap
+  // set for its own sake (a flock this size and no bigger) can incidentally
+  // clear a shortfall that would otherwise have forced an unplanned sale on
+  // top of it. This is an ordinary fall sale at the going rate, not the
+  // panicked "everyone is selling" price the feed-shortage sale further down
+  // pays — the player chose this, nobody is dumping stock at a loss.
+  for (const [id, cap] of Object.entries(state.livestockCap || {})) {
+    if (!(cap >= 0)) continue;
+    const have = state.livestock[id] || 0;
+    const sell = have - cap;
+    if (sell <= 0) continue;
+    const l = LIVESTOCK[id];
+    if (!l) continue;
+    const each = interpAnchors(LIVESTOCK_PRICING[id], state.year);
+    const gross = each * sell;
+    state.livestock[id] = cap;
+    state.cash += gross;
+    record.income.plannedStockSale = (record.income.plannedStockSale || 0) + gross;
+    // A per-head price here would round to the indistinguishable "$0" for a
+    // sub-dollar bird under money()'s whole-dollar display — the total is
+    // never that small, so show the total.
+    record.notes.push(`Kept the ${l.name.toLowerCase()} to ${cap}: sold ${sell} for $${Math.round(gross).toLocaleString()}.`);
   }
 
   // --- feed the stock -------------------------------------------------------

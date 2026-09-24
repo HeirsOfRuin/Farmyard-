@@ -10,7 +10,7 @@ import {
 } from '../engine/state.js';
 import { runYear } from '../engine/turn.js';
 import { farmSummary, netWorth, totalDebt, croppableAcres, breakableAcres } from '../engine/derive.js';
-import { playerQuarters, legalDescription, quarterById } from '../engine/land.js';
+import { playerQuarters, legalDescription, quarterById, maxBrokenAcres } from '../engine/land.js';
 import { operator, fullName, age, pendingLifeChoices } from '../engine/family.js';
 import { historyFor } from '../data/history.data.js';
 import { CROPS } from '../data/crops.data.js';
@@ -69,6 +69,7 @@ function emptyDraft() {
     loans: [], improvements: [], fileHomestead: null, writeWill: null,
     roadWorks: [], takeUpPrograms: [],
     choiceResponse: {}, lifeChoices: {}, familyStance: {}, grainStance: {},
+    livestockCap: {},
   };
 }
 
@@ -91,7 +92,13 @@ function freshDraft(s) {
   // is nobody's idea of a plan.
   for (const q of playerQuarters(s.quarters)) {
     if (left < 1) break;
-    const room = 160 - q.brokenAcres;
+    // The true ceiling, not the bare 160 acres — a quarter carries a yard,
+    // a road allowance, sloughs that never drain, and a stone pile, so
+    // maxBrokenAcres(q) can sit well under 160 depending on soil. Using the
+    // raw acreage here kept suggesting a few more acres of breaking every
+    // year on ground that was already at its real limit, which the engine
+    // would then quietly refuse — the plan asked for sod that was not there.
+    const room = maxBrokenAcres(q) - q.brokenAcres;
     if (room < 1) continue;
     const take = Math.min(room, left);
     d.breakAcres[q.id] = Math.round(take);
@@ -675,6 +682,13 @@ function onChange(e) {
     draft.breakAcres[t.dataset.break] = v;
     // Deliberately no re-render: re-rendering on every keystroke destroys the
     // input the player is typing in, and the value is already captured.
+    return;
+  }
+  if (t.dataset.livestockCap) {
+    draft.livestockCap = draft.livestockCap || {};
+    // An emptied field clears the standing cap (null, read by phaseSpring as
+    // "remove it"), not zero — zero would sell the whole species off.
+    draft.livestockCap[t.dataset.livestockCap] = t.value === '' ? null : Math.max(0, Math.floor(Number(t.value) || 0));
     return;
   }
 }

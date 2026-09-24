@@ -95,6 +95,7 @@ export function newGame({ seed = 1, difficulty = 'settler', background = 'ontari
     statuteDaysWorked: 0, // days owed the municipality on the roads, worked off
     equipment,
     livestock,
+    livestockCap: {}, // player's own "keep at most N" ceiling per species; see phaseWinter
     granary: {},
     technologies: [],
     wheatVariety: 'redFife',
@@ -195,6 +196,7 @@ export function rehydrate(s) {
   if (s.startYear == null) s.startYear = FIRST_YEAR;
   if (s.startingEquipmentCount == null) s.startingEquipmentCount = (s.equipment || []).length;
   if (!s.tutorial) s.tutorial = { seen: [], dismissed: true };
+  if (!s.livestockCap) s.livestockCap = {};
   return s;
 }
 
