@@ -19,7 +19,7 @@ import {
   totalDebt, farmSummary, bestImplement, bestBreaker, clamp, currentVariety, equipmentPrice,
   propertyTax, conditionFactor,
   creditLimit, croppableAcres, breakableAcres, weedControlLevel,
-  carryingCapacity, livestockUnits, speciesCap, draftPower, techEffect,
+  carryingCapacity, livestockUnits, speciesCap, draftPower, desiredDraftPower, techEffect,
   BASE_THRESHING_DAYS, BASE_BREAKING_DAYS,
 } from './derive.js';
 import {
@@ -393,9 +393,26 @@ function phaseSpring(state, record, plan) {
     // feed, which is not what buying one more ox means.
     const existing = state.equipment.find((i) => i.type === buy.type);
     if (existing) {
-      existing.count = (existing.count || 1) + (buy.count || 1);
+      const prevCount = existing.count || 1;
+      const addCount = buy.count || 1;
+      existing.count = prevCount + addCount;
       // A new unit alongside an old one lifts the average condition.
       existing.condition = Math.min(1, (existing.condition ?? 1) * 0.6 + 0.4);
+      // And lifts the average age the same way — a count-weighted blend, not
+      // left at whenever the entry was first opened. The aging-out check
+      // below (phaseWinter) reads ONE yearBought per entry and, once it is
+      // over the type's lifespan, retires a unit from the entry every year
+      // regardless of count. Left unmoved, a single entry opened in 1875
+      // that a farm kept adding oxen to for the next sixty years would start
+      // shedding a unit annually the moment it turned twelve — one gone for
+      // every one bought, forever, however many of the herd were actually
+      // that old. A farm buying its way into more draft power for more
+      // crews (see seasonCapacity, in derive.js) would spend the purchase
+      // price every year and never keep the herd, which is debt with
+      // nothing to show for it.
+      existing.yearBought = Math.round(
+        ((existing.yearBought ?? state.year) * prevCount + state.year * addCount) / (prevCount + addCount)
+      );
     } else {
       state.equipment.push({ type: buy.type, count: buy.count || 1, yearBought: state.year, condition: 1 });
     }
@@ -1630,10 +1647,15 @@ function phaseWinter(state, record, plan) {
   // and tractor power did not — but a farm kept the teams it had work for and
   // sold the rest. Every surplus team eats 55 bushels of oats a year, and an
   // uncapped herd was eating more than half the crop by the 1890s.
-  const draftNeeded = ['till', 'seed', 'harvest']
-    .map((op) => bestImplement(state, op))
-    .filter((i) => i && !i.byHand && !i.selfPowered)
-    .reduce((m, i) => Math.max(m, i.draftNeeded || 0), 0);
+  //
+  // desiredDraftPower(), not one implement's own draftNeeded: seasonCapacity
+  // can now run more than one crew off a shared pool of teams, so what is
+  // worth keeping is what the BUSIEST operation could put to work across
+  // every crew hands allow, not the figure for a single plow. Sized to one
+  // implement, this sold off every team bought for a second or third crew
+  // the same winter it arrived, at a distress price — the farm never got to
+  // use what it had just paid for.
+  const draftNeeded = desiredDraftPower(state);
 
   const horses = state.equipment.find((i) => i.type === 'horses');
   if (horses && rng.chance(0.25)) horses.count = (horses.count || 1) + 1;

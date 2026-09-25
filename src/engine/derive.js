@@ -393,6 +393,17 @@ export const HAND_METHODS = {
  * Capacity is the constraint that makes mechanization matter: yield says what
  * grew, this says what you got to.
  *
+ * One crew needs one implement AND one hand AND (unless self-powered) a team
+ * or engine to pull it — not one implement TYPE. A farm with three seed
+ * drills and three hands to run them crews all three, at three drills' worth
+ * of seeding a day; a farm with three drills and one hand crews exactly one,
+ * because the other two have nobody to sit on them. Every physical unit the
+ * farm owns for this operation is a candidate crew, best iron first, until
+ * hands or draft power run out — draft power is a SHARED pool (state's total
+ * horses and tractors), not renewed per implement, so a second crew drawing
+ * on the same team the first one already claimed gets whatever is left, not
+ * a second full team out of nowhere.
+ *
  * Always returns a numeric `perDay`, never undefined. An earlier version
  * omitted it when no implement was owned, and callers dividing by it produced
  * a capacity of four thousandths of an acre — which looks like a farm that
@@ -400,34 +411,131 @@ export const HAND_METHODS = {
  */
 export function seasonCapacity(state, operation, daysAvailable) {
   const labour = labourForce(state);
-  let impl = bestImplement(state, operation);
-  let byHand = false;
-
-  // Fall back to hand work when there is no implement — OR when the implement
-  // on the place is currently worse than hands are. A plow with no team to
-  // pull it is not a plow, and owning one must never leave a farm worse off
-  // than owning nothing at all: that produced farms that silently stopped
-  // seeding the year their last ox died.
   const hand = HAND_METHODS[operation];
-  if (hand && (!impl || (impl.effectiveCapacity || 0) < hand.capacity)) {
-    impl = { ...hand, effectiveCapacity: hand.capacity, item: { condition: 1 } };
-    byHand = true;
+  const handsAvailable = Math.floor(labour.units) || (labour.units > 0 ? 1 : 0);
+
+  // What full power gets each physical unit, before the shared draft pool cuts
+  // in. Condition, reliability and the rubber-tire bonus are properties of the
+  // unit (or the farm) that do not change with how many crews are running at
+  // once — only the draft ratio does, and that is worked out below as units
+  // are actually assigned to hands.
+  const powerBonus = state.equipment.find((i) => equipDef(i.type).capacityBonus);
+  const bonusMult = powerBonus ? equipDef(powerBonus.type).capacityBonus : 1;
+  const candidates = [];
+  for (const { item, def } of implementsFor(state, operation)) {
+    if (!def.capacity) continue;
+    let base = def.capacity * conditionFactor(item);
+    if (def.reliability) base *= def.reliability;
+    if (!def.selfPowered) base *= bonusMult;
+    const n = item.count || 1;
+    for (let i = 0; i < n; i++) {
+      candidates.push({ def, base, draftNeeded: def.selfPowered ? 0 : (def.draftNeeded || 0) });
+    }
   }
-  if (!impl) {
-    return { acres: 0, perDay: 0, implement: null, crews: 0,
-      reason: `nothing on the place performs ${operation}` };
+  // Best iron crewed first: a farm puts its most capable machine to work
+  // before its worst one, whatever order they happen to sit in the yard.
+  candidates.sort((a, b) => b.base - a.base);
+
+  let handsLeft = handsAvailable;
+  let draftPool = draftPower(state);
+  let perDay = 0;
+  let crews = 0;
+  let bestUsed = null;
+
+  for (const c of candidates) {
+    if (handsLeft <= 0) break;
+    let ratio = 1;
+    if (c.draftNeeded > 0) {
+      if (draftPool <= 0) continue; // the team already claimed is spoken for
+      ratio = Math.min(1, draftPool / c.draftNeeded);
+    }
+    const cap = c.base * ratio;
+    // A machine that cannot get a real team behind it is worse than a person
+    // with a sack or a scythe — put the hand to that instead of a crippled
+    // implement. A plow with no team to pull it is not a plow, and owning one
+    // must never leave a farm worse off than owning nothing at all: that
+    // produced farms that silently stopped seeding the year their last ox
+    // died.
+    if (hand && cap < hand.capacity) continue;
+    if (c.draftNeeded > 0) draftPool = Math.max(0, draftPool - c.draftNeeded);
+    perDay += cap;
+    crews += 1;
+    handsLeft -= 1;
+    if (!bestUsed || cap > bestUsed.cap) bestUsed = { def: c.def, cap };
   }
 
-  // One implement needs one person; a second machine needs a second person.
-  // Hand work scales with people directly — everybody can swing a scythe.
-  const machines = byHand ? Math.max(1, Math.floor(labour.units)) : implementsFor(state, operation).length;
-  const crews = Math.min(machines, Math.floor(labour.units) || (labour.units > 0 ? 1 : 0));
-  if (crews <= 0) {
-    return { acres: 0, perDay: 0, implement: impl, crews: 0, byHand,
-      reason: 'nobody on the place is able to work' };
+  if (crews === 0) {
+    // Nothing on the place could be crewed at all — no implement owned for
+    // this operation, or every one of them short of the power to move. A farm
+    // can never be structurally unable to seed or cut, only slow at it: a
+    // settler with nothing but a sack sowed broadcast, and one with nothing
+    // but a sickle cut by hand.
+    if (!hand) {
+      return { acres: 0, perDay: 0, implement: null, crews: 0,
+        reason: `nothing on the place performs ${operation}` };
+    }
+    if (handsAvailable <= 0) {
+      return { acres: 0, perDay: 0,
+        implement: { ...hand, effectiveCapacity: hand.capacity, item: { condition: 1 } },
+        crews: 0, byHand: true, reason: 'nobody on the place is able to work' };
+    }
+    const perDayHand = hand.capacity * handsAvailable;
+    return {
+      acres: perDayHand * daysAvailable, perDay: perDayHand,
+      implement: { ...hand, effectiveCapacity: hand.capacity, item: { condition: 1 } },
+      crews: handsAvailable, byHand: true,
+    };
   }
-  const perDay = impl.effectiveCapacity * crews;
-  return { acres: perDay * daysAvailable, perDay, implement: impl, crews, byHand };
+
+  return {
+    acres: perDay * daysAvailable, perDay,
+    implement: { ...bestUsed.def, effectiveCapacity: bestUsed.cap, item: { condition: 1 } },
+    crews, byHand: false,
+    // What is left over once every crew is assigned: a spare hand with
+    // nothing crewable to run (handsSpare), or draft pool left unclaimed
+    // because there was nothing left to spend it on (draftSpare). The "why"
+    // behind a crew count the season panel's hint reads directly, rather
+    // than guessing it back out from hands and ownership after the fact.
+    handsSpare: handsLeft, draftSpare: draftPool,
+  };
+}
+
+/**
+ * How much draft power the farm could actually put to work at once, at
+ * whichever operation draws the most — not what ONE implement needs, but
+ * what crewing every implement seasonCapacity() would hitch a hand to for
+ * that operation would draw, all at the same time.
+ *
+ * This exists for phaseWinter's surplus-draft sale (turn.js), which decides
+ * how many teams are worth keeping. Sized against a single implement's need,
+ * as it was before seasonCapacity() could run more than one crew on a
+ * shared pool, it sold off every team beyond that one figure the same winter
+ * it arrived — at a distress price — regardless of whether a second or
+ * third crew could have used it. A farm buying its way into more crews
+ * bought a team, watched phaseWinter sell it back for half, and did that
+ * every year, which is debt with nothing to show for it.
+ */
+export function desiredDraftPower(state) {
+  const labour = labourForce(state);
+  const handsFloor = Math.floor(labour.units) || (labour.units > 0 ? 1 : 0);
+  let peak = 0;
+  for (const op of ['till', 'seed', 'harvest']) {
+    const units = [];
+    for (const { item, def } of implementsFor(state, op)) {
+      if (!def.capacity || def.selfPowered || !(def.draftNeeded > 0)) continue;
+      units.push({ base: def.capacity * conditionFactor(item), draftNeeded: def.draftNeeded });
+    }
+    units.sort((a, b) => b.base - a.base);
+    let need = 0;
+    let handsLeft = handsFloor;
+    for (const u of units) {
+      if (handsLeft <= 0) break;
+      need += u.draftNeeded;
+      handsLeft -= 1;
+    }
+    peak = Math.max(peak, need);
+  }
+  return peak;
 }
 
 // ---------------------------------------------------------------------------

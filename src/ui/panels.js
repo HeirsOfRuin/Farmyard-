@@ -12,7 +12,7 @@ import {
   grazingCapacity, netWorth, landValue, equipmentValue, livestockValue,
   granaryValue, labourForce, draftPower, equipmentPrice, currentVariety,
   bestImplement, breakableAcres, seasonCapacity, fieldLogistics, timelinessFactor,
-  annualWage, implementsFor,
+  annualWage,
 } from '../engine/derive.js';
 import { offeredPrograms, isEnrolled, taxReliefLabel, PROGRAM_LIST } from '../engine/programs.js';
 import { ROAD_WORKS } from '../data/roads.data.js';
@@ -244,27 +244,15 @@ export function renderPlan(state, draft) {
   const breakable = breakableAcres(state);
   out.push(row('Acres the outfit can crop', `${Math.round(cap.acres)} ac`));
   out.push(row('Limited by', cap.bottleneck));
-  // What actually sets the pace for the bottleneck operation: ONE implement
-  // — the single best one owned, never the sum of however many are in the
-  // yard — run by as many hands as there are machines to put them on. A
-  // second, third, or twentieth plow of a type already owned adds nothing;
-  // it is crews (hands, capped at one per distinct implement TYPE for the
-  // operation) and that one implement's own rated capacity that set the
-  // pace. Surfaced here because "I own two dozen plows and it isn't
-  // helping" is not a bug report, it is this arithmetic with no way to see
-  // it.
+  // What actually sets the pace for the bottleneck operation: every physical
+  // implement the farm owns for it is a candidate crew — one hand and, unless
+  // it is self-powered, a share of the farm's own draft power each — crewed
+  // best iron first until hands or the draft pool run out (seasonCapacity, in
+  // derive.js). A second seed drill genuinely adds a second crew now, so long
+  // as there is a spare hand and a spare team; it is hands or horsepower that
+  // caps it, never "you already own one of these."
   const bottleneckOp = cap.bottleneck === 'tillage' ? 'till' : cap.bottleneck === 'seeding' ? 'seed' : 'harvest';
   const bottleneckCap = seasonCapacity(state, bottleneckOp, 1);
-  const bottleneckTypes = implementsFor(state, bottleneckOp).length;
-  // The previous version of this hint told every player the same three
-  // levers regardless of which one actually applied — "hire a hand" was
-  // shown even to a farm that already had four times the hands it had
-  // implement types for the job, which does nothing (crews are capped at
-  // the SMALLER of the two). Work out which of hands or implement variety
-  // is actually binding, and for variety, whether there is anything left to
-  // buy at all — a farm that already owns every kind of drill invented so
-  // far cannot solve this by shopping.
-  const handsFloor = Math.floor(labourForce(state).units);
   let bottleneckNote;
   if (!bottleneckCap.implement || bottleneckCap.byHand) {
     bottleneckNote = cap.bottleneck === 'tillage' ? 'A faster plow or a team that can pull a bigger one raises this.'
@@ -272,31 +260,24 @@ export function renderPlan(state, draft) {
       : 'A faster binder or combine raises this.';
   } else {
     const implName = esc(bottleneckCap.implement.name || bottleneckCap.implement.id);
-    const setBy = `Set by the ${implName}, run ${bottleneckCap.crews} up at once`;
-    if (handsFloor < bottleneckTypes) {
-      bottleneckNote = `${setBy}. You own ${bottleneckTypes} distinct kinds of ${esc(cap.bottleneck)} implement ` +
-        `but only ${handsFloor} hand${handsFloor === 1 ? '' : 's'} to run them — hiring another hand raises ` +
-        `this, up to ${bottleneckTypes} crews. Another implement will not: you already own more kinds than ` +
-        `you have people for.`;
+    const crewWord = bottleneckCap.crews === 1 ? 'crew' : 'crews';
+    const setBy = `Set by the ${implName} — ${bottleneckCap.crews} ${crewWord} of it running`;
+    // Read straight off what seasonCapacity() actually had left over once
+    // every crew was assigned, rather than probing with a hypothetical extra
+    // unit — croppableAcres(state, extra) adds that hypothetical at full
+    // condition, and comparing a fresh unit against a farm's own WORN fleet
+    // showed a "gain" from buying another of a type already owned well past
+    // what hands could crew, because the new one would simply replace a
+    // tired one in the top slots, not add a crew.
+    if (bottleneckCap.handsSpare <= 0) {
+      bottleneckNote = `${setBy} — that is every hand available. Hiring another raises this; another ` +
+        `implement will not, there would be nobody to run it.`;
+    } else if (bottleneckCap.draftSpare > 0) {
+      bottleneckNote = `${setBy}. Another ${implName} would raise this further — there is a hand and power ` +
+        `free to run it.`;
     } else {
-      const ownedTypeIds = new Set(implementsFor(state, bottleneckOp).map(({ item }) => item.type));
-      const notOwned = Object.values(EQUIPMENT).filter((e) => e.operation === bottleneckOp && !ownedTypeIds.has(e.id));
-      const buyableNow = notOwned.filter((e) => state.year >= e.from && state.year <= e.to);
-      const nextFuture = notOwned.filter((e) => state.year < e.from).sort((a, b) => a.from - b.from)[0];
-      const base = `${setBy} — one crew per hand, one per distinct kind of ${esc(cap.bottleneck)} implement ` +
-        `you own (you have ${bottleneckTypes}). Another of the SAME kind adds nothing.`;
-      if (buyableNow.length) {
-        bottleneckNote = `${base} A ${esc(buyableNow.map((e) => e.name).join(' or '))} would, since it's a ` +
-          `kind you don't own yet. Hiring more hands will not — you already have enough to crew everything ` +
-          `you own.`;
-      } else if (nextFuture) {
-        bottleneckNote = `${base} Every kind on the market today is already in your yard; the ` +
-          `${esc(nextFuture.name)} isn't built until ${nextFuture.from}. Until then only a faster single ` +
-          `implement raises this — hiring more hands will not.`;
-      } else {
-        bottleneckNote = `${base} Every kind of ${esc(cap.bottleneck)} implement there is is already in ` +
-          `your yard. Only a faster single implement raises this now.`;
-      }
+      bottleneckNote = `${setBy}. There are hands to spare, but not the draft power to put another machine ` +
+        `to work — more horses or a bigger engine raises this, another ${implName} will not.`;
     }
   }
   out.push(

@@ -13,7 +13,7 @@
 
 import {
   farmSummary, bestImplement, bestBreaker, seasonCapacity, labourForce, creditLimit,
-  feedRequired, totalDebt, netWorth, equipmentPrice, draftPower, croppableAcres,
+  feedRequired, totalDebt, netWorth, equipmentPrice, draftPower, desiredDraftPower, croppableAcres,
   livingCost, debtService, carryingCapacity, livestockUnits, breakableAcres, annualWage,
   techEffect, timelinessFactor, BASE_SPRING_DAYS, BASE_HARVEST_DAYS,
 } from '../src/engine/derive.js';
@@ -384,14 +384,16 @@ export function makePlan(state, opts = {}) {
  */
 function restorePowerPurchase(state, cash) {
   const draft = draftPower(state);
-  // What the implements on the place actually need to work at full rate.
-  let needed = 0;
-  for (const op of ['till', 'seed', 'harvest']) {
-    const impl = bestImplement(state, op);
-    if (impl && !impl.byHand) needed = Math.max(needed, impl.draftNeeded || 0);
-  }
-  // Enough power to pull the biggest implement, with a working margin. More
-  // than that is animals eating oats for nothing.
+  // What the implements on the place could actually put to work — every crew
+  // seasonCapacity() would hitch a hand to, not just the one biggest plow.
+  // Read from a single implement's own draftNeeded, this stopped buying the
+  // moment the farm's FIRST team could pull its best machine, which left a
+  // farm with three drills and three hands still running only one of them —
+  // the same stale ceiling desiredDraftPower() replaced in phaseWinter's
+  // surplus-sale, for the same reason.
+  const needed = desiredDraftPower(state);
+  // Enough power to crew all of it, with a working margin. More than that is
+  // animals eating oats for nothing.
   if (needed === 0 || draft >= needed * 1.05) return null;
 
   const options = equipmentAvailable(state.year, 'power')
@@ -430,15 +432,17 @@ function findBottleneckUpgrade(state, budget) {
   const usable = Math.max(20, reachable);
   const effective = (c) => Math.min(c.acres, usable);
 
-  // Anything that performs field work, plus power to pull it. Machines the
-  // farm already owns are included only if worn out — a plow at 10% is not
-  // the plow you bought.
+  // Anything that performs field work, plus power to pull it — including a
+  // second unit of something already owned, which now crews as its own
+  // implement given a spare hand and a spare team (seasonCapacity, in
+  // derive.js). This used to skip anything owned in good condition outright,
+  // back when a farm's second seed drill added nothing but idle iron; the
+  // gain test below is what actually decides it now, so the guard would only
+  // hide real candidates from a farm with hands to spare.
   for (const def of equipmentAvailable(year)) {
     const isField = ['till', 'seed', 'harvest'].includes(def.operation);
     const isPower = def.category === 'power';
     if (!isField && !isPower) continue;
-    const owned = state.equipment.find((i) => i.type === def.id);
-    if (owned && (owned.condition ?? 1) > 0.3) continue;
 
     const price = estimatePrice(state, def);
     if (price > budget) continue;
@@ -478,8 +482,6 @@ function creditPurchase(state, cash) {
   let best = null;
   for (const def of equipmentAvailable(state.year)) {
     if (!['till', 'seed', 'harvest'].includes(def.operation)) continue;
-    const owned = state.equipment.find((i) => i.type === def.id);
-    if (owned && (owned.condition ?? 1) > 0.3) continue;
     const price = estimatePrice(state, def);
     // A cheap implement that restores a collapsed capacity is worth a note
     // even when the books are tight: without the plow there is no crop, and

@@ -4066,6 +4066,17 @@ const HAND_METHODS = {
  * Capacity is the constraint that makes mechanization matter: yield says what
  * grew, this says what you got to.
  *
+ * One crew needs one implement AND one hand AND (unless self-powered) a team
+ * or engine to pull it — not one implement TYPE. A farm with three seed
+ * drills and three hands to run them crews all three, at three drills' worth
+ * of seeding a day; a farm with three drills and one hand crews exactly one,
+ * because the other two have nobody to sit on them. Every physical unit the
+ * farm owns for this operation is a candidate crew, best iron first, until
+ * hands or draft power run out — draft power is a SHARED pool (state's total
+ * horses and tractors), not renewed per implement, so a second crew drawing
+ * on the same team the first one already claimed gets whatever is left, not
+ * a second full team out of nowhere.
+ *
  * Always returns a numeric `perDay`, never undefined. An earlier version
  * omitted it when no implement was owned, and callers dividing by it produced
  * a capacity of four thousandths of an acre — which looks like a farm that
@@ -4073,34 +4084,131 @@ const HAND_METHODS = {
  */
 function seasonCapacity(state, operation, daysAvailable) {
   const labour = labourForce(state);
-  let impl = bestImplement(state, operation);
-  let byHand = false;
-
-  // Fall back to hand work when there is no implement — OR when the implement
-  // on the place is currently worse than hands are. A plow with no team to
-  // pull it is not a plow, and owning one must never leave a farm worse off
-  // than owning nothing at all: that produced farms that silently stopped
-  // seeding the year their last ox died.
   const hand = HAND_METHODS[operation];
-  if (hand && (!impl || (impl.effectiveCapacity || 0) < hand.capacity)) {
-    impl = { ...hand, effectiveCapacity: hand.capacity, item: { condition: 1 } };
-    byHand = true;
+  const handsAvailable = Math.floor(labour.units) || (labour.units > 0 ? 1 : 0);
+
+  // What full power gets each physical unit, before the shared draft pool cuts
+  // in. Condition, reliability and the rubber-tire bonus are properties of the
+  // unit (or the farm) that do not change with how many crews are running at
+  // once — only the draft ratio does, and that is worked out below as units
+  // are actually assigned to hands.
+  const powerBonus = state.equipment.find((i) => equipDef(i.type).capacityBonus);
+  const bonusMult = powerBonus ? equipDef(powerBonus.type).capacityBonus : 1;
+  const candidates = [];
+  for (const { item, def } of implementsFor(state, operation)) {
+    if (!def.capacity) continue;
+    let base = def.capacity * conditionFactor(item);
+    if (def.reliability) base *= def.reliability;
+    if (!def.selfPowered) base *= bonusMult;
+    const n = item.count || 1;
+    for (let i = 0; i < n; i++) {
+      candidates.push({ def, base, draftNeeded: def.selfPowered ? 0 : (def.draftNeeded || 0) });
+    }
   }
-  if (!impl) {
-    return { acres: 0, perDay: 0, implement: null, crews: 0,
-      reason: `nothing on the place performs ${operation}` };
+  // Best iron crewed first: a farm puts its most capable machine to work
+  // before its worst one, whatever order they happen to sit in the yard.
+  candidates.sort((a, b) => b.base - a.base);
+
+  let handsLeft = handsAvailable;
+  let draftPool = draftPower(state);
+  let perDay = 0;
+  let crews = 0;
+  let bestUsed = null;
+
+  for (const c of candidates) {
+    if (handsLeft <= 0) break;
+    let ratio = 1;
+    if (c.draftNeeded > 0) {
+      if (draftPool <= 0) continue; // the team already claimed is spoken for
+      ratio = Math.min(1, draftPool / c.draftNeeded);
+    }
+    const cap = c.base * ratio;
+    // A machine that cannot get a real team behind it is worse than a person
+    // with a sack or a scythe — put the hand to that instead of a crippled
+    // implement. A plow with no team to pull it is not a plow, and owning one
+    // must never leave a farm worse off than owning nothing at all: that
+    // produced farms that silently stopped seeding the year their last ox
+    // died.
+    if (hand && cap < hand.capacity) continue;
+    if (c.draftNeeded > 0) draftPool = Math.max(0, draftPool - c.draftNeeded);
+    perDay += cap;
+    crews += 1;
+    handsLeft -= 1;
+    if (!bestUsed || cap > bestUsed.cap) bestUsed = { def: c.def, cap };
   }
 
-  // One implement needs one person; a second machine needs a second person.
-  // Hand work scales with people directly — everybody can swing a scythe.
-  const machines = byHand ? Math.max(1, Math.floor(labour.units)) : implementsFor(state, operation).length;
-  const crews = Math.min(machines, Math.floor(labour.units) || (labour.units > 0 ? 1 : 0));
-  if (crews <= 0) {
-    return { acres: 0, perDay: 0, implement: impl, crews: 0, byHand,
-      reason: 'nobody on the place is able to work' };
+  if (crews === 0) {
+    // Nothing on the place could be crewed at all — no implement owned for
+    // this operation, or every one of them short of the power to move. A farm
+    // can never be structurally unable to seed or cut, only slow at it: a
+    // settler with nothing but a sack sowed broadcast, and one with nothing
+    // but a sickle cut by hand.
+    if (!hand) {
+      return { acres: 0, perDay: 0, implement: null, crews: 0,
+        reason: `nothing on the place performs ${operation}` };
+    }
+    if (handsAvailable <= 0) {
+      return { acres: 0, perDay: 0,
+        implement: { ...hand, effectiveCapacity: hand.capacity, item: { condition: 1 } },
+        crews: 0, byHand: true, reason: 'nobody on the place is able to work' };
+    }
+    const perDayHand = hand.capacity * handsAvailable;
+    return {
+      acres: perDayHand * daysAvailable, perDay: perDayHand,
+      implement: { ...hand, effectiveCapacity: hand.capacity, item: { condition: 1 } },
+      crews: handsAvailable, byHand: true,
+    };
   }
-  const perDay = impl.effectiveCapacity * crews;
-  return { acres: perDay * daysAvailable, perDay, implement: impl, crews, byHand };
+
+  return {
+    acres: perDay * daysAvailable, perDay,
+    implement: { ...bestUsed.def, effectiveCapacity: bestUsed.cap, item: { condition: 1 } },
+    crews, byHand: false,
+    // What is left over once every crew is assigned: a spare hand with
+    // nothing crewable to run (handsSpare), or draft pool left unclaimed
+    // because there was nothing left to spend it on (draftSpare). The "why"
+    // behind a crew count the season panel's hint reads directly, rather
+    // than guessing it back out from hands and ownership after the fact.
+    handsSpare: handsLeft, draftSpare: draftPool,
+  };
+}
+
+/**
+ * How much draft power the farm could actually put to work at once, at
+ * whichever operation draws the most — not what ONE implement needs, but
+ * what crewing every implement seasonCapacity() would hitch a hand to for
+ * that operation would draw, all at the same time.
+ *
+ * This exists for phaseWinter's surplus-draft sale (turn.js), which decides
+ * how many teams are worth keeping. Sized against a single implement's need,
+ * as it was before seasonCapacity() could run more than one crew on a
+ * shared pool, it sold off every team beyond that one figure the same winter
+ * it arrived — at a distress price — regardless of whether a second or
+ * third crew could have used it. A farm buying its way into more crews
+ * bought a team, watched phaseWinter sell it back for half, and did that
+ * every year, which is debt with nothing to show for it.
+ */
+function desiredDraftPower(state) {
+  const labour = labourForce(state);
+  const handsFloor = Math.floor(labour.units) || (labour.units > 0 ? 1 : 0);
+  let peak = 0;
+  for (const op of ['till', 'seed', 'harvest']) {
+    const units = [];
+    for (const { item, def } of implementsFor(state, op)) {
+      if (!def.capacity || def.selfPowered || !(def.draftNeeded > 0)) continue;
+      units.push({ base: def.capacity * conditionFactor(item), draftNeeded: def.draftNeeded });
+    }
+    units.sort((a, b) => b.base - a.base);
+    let need = 0;
+    let handsLeft = handsFloor;
+    for (const u of units) {
+      if (handsLeft <= 0) break;
+      need += u.draftNeeded;
+      handsLeft -= 1;
+    }
+    peak = Math.max(peak, need);
+  }
+  return peak;
 }
 
 // ---------------------------------------------------------------------------
@@ -4744,7 +4852,7 @@ const LIVESTOCK_PRICE_CACHE = LIVESTOCK_PRICING;
 
 
 
-return { neutralConditions, fertilityFactor, newBreakingFactor, moistureFactor, weedControlLevel, weedFactor, techEffect, rotationFactor, varietyFactor, currentVariety, techYieldFactor, yieldPerAcre, draftPower, conditionFactor, implementsFor, bestImplement, bestBreaker, effectiveCapacity, labourForce, workingAge, workerUnits, seasonCapacity, travelSpeed, haulCapacity, transportPenalty, timelinessFactor, fieldLogistics, croppableAcres, breakableAcres, springDays, harvestDays, feedRequired, projectedFeedRequired, carryingCapacity, speciesCap, livestockUnits, grazingCapacity, landValue, equipmentPrice, equipmentValue, livestockValue, headPrice, granaryValue, totalDebt, debtService, propertyTax, netWorth, creditLimit, borrowingRate, livingCost, subsistenceOffset, annualWage, haulMiles, marketingCostPerBushel, farmSummary, BASE_SPRING_DAYS, BASE_HARVEST_DAYS, BASE_THRESHING_DAYS, HAND_METHODS, BASE_BREAKING_DAYS, clamp };
+return { neutralConditions, fertilityFactor, newBreakingFactor, moistureFactor, weedControlLevel, weedFactor, techEffect, rotationFactor, varietyFactor, currentVariety, techYieldFactor, yieldPerAcre, draftPower, conditionFactor, implementsFor, bestImplement, bestBreaker, effectiveCapacity, labourForce, workingAge, workerUnits, seasonCapacity, desiredDraftPower, travelSpeed, haulCapacity, transportPenalty, timelinessFactor, fieldLogistics, croppableAcres, breakableAcres, springDays, harvestDays, feedRequired, projectedFeedRequired, carryingCapacity, speciesCap, livestockUnits, grazingCapacity, landValue, equipmentPrice, equipmentValue, livestockValue, headPrice, granaryValue, totalDebt, debtService, propertyTax, netWorth, creditLimit, borrowingRate, livingCost, subsistenceOffset, annualWage, haulMiles, marketingCostPerBushel, farmSummary, BASE_SPRING_DAYS, BASE_HARVEST_DAYS, BASE_THRESHING_DAYS, HAND_METHODS, BASE_BREAKING_DAYS, clamp };
 })();
 
 __m["src/engine/state.js"] = (function () {
@@ -7224,7 +7332,7 @@ __m["src/engine/turn.js"] = (function () {
 
 const { streamFor } = __m["src/engine/rng.js"];
 const { STATUS, ownedQuarters } = __m["src/engine/state.js"];
-const { yieldPerAcre, neutralConditions, seasonCapacity, springDays, harvestDays, feedRequired, projectedFeedRequired, grazingCapacity, livingCost, annualWage, labourForce, netWorth, totalDebt, farmSummary, bestImplement, bestBreaker, clamp, currentVariety, equipmentPrice, propertyTax, conditionFactor, creditLimit, croppableAcres, breakableAcres, weedControlLevel, carryingCapacity, livestockUnits, speciesCap, draftPower, techEffect, BASE_THRESHING_DAYS, BASE_BREAKING_DAYS } = __m["src/engine/derive.js"];
+const { yieldPerAcre, neutralConditions, seasonCapacity, springDays, harvestDays, feedRequired, projectedFeedRequired, grazingCapacity, livingCost, annualWage, labourForce, netWorth, totalDebt, farmSummary, bestImplement, bestBreaker, clamp, currentVariety, equipmentPrice, propertyTax, conditionFactor, creditLimit, croppableAcres, breakableAcres, weedControlLevel, carryingCapacity, livestockUnits, speciesCap, draftPower, desiredDraftPower, techEffect, BASE_THRESHING_DAYS, BASE_BREAKING_DAYS } = __m["src/engine/derive.js"];
 const { ACRES_PER_QUARTER, playerQuarters, quarterById, workableAcres, breakingCostPerAcre, quarterValueFactor, roadFor, distanceFromYard, settledBrokenAcres, maxBrokenAcres, forageAcres } = __m["src/engine/land.js"];
 const { crop: cropDef, CROPS, cropsAvailable, WHEAT_VARIETIES } = __m["src/data/crops.data.js"];
 const { equipment: equipDef, EQUIPMENT } = __m["src/data/equipment.data.js"];
@@ -7589,9 +7697,26 @@ function phaseSpring(state, record, plan) {
     // feed, which is not what buying one more ox means.
     const existing = state.equipment.find((i) => i.type === buy.type);
     if (existing) {
-      existing.count = (existing.count || 1) + (buy.count || 1);
+      const prevCount = existing.count || 1;
+      const addCount = buy.count || 1;
+      existing.count = prevCount + addCount;
       // A new unit alongside an old one lifts the average condition.
       existing.condition = Math.min(1, (existing.condition ?? 1) * 0.6 + 0.4);
+      // And lifts the average age the same way — a count-weighted blend, not
+      // left at whenever the entry was first opened. The aging-out check
+      // below (phaseWinter) reads ONE yearBought per entry and, once it is
+      // over the type's lifespan, retires a unit from the entry every year
+      // regardless of count. Left unmoved, a single entry opened in 1875
+      // that a farm kept adding oxen to for the next sixty years would start
+      // shedding a unit annually the moment it turned twelve — one gone for
+      // every one bought, forever, however many of the herd were actually
+      // that old. A farm buying its way into more draft power for more
+      // crews (see seasonCapacity, in derive.js) would spend the purchase
+      // price every year and never keep the herd, which is debt with
+      // nothing to show for it.
+      existing.yearBought = Math.round(
+        ((existing.yearBought ?? state.year) * prevCount + state.year * addCount) / (prevCount + addCount)
+      );
     } else {
       state.equipment.push({ type: buy.type, count: buy.count || 1, yearBought: state.year, condition: 1 });
     }
@@ -8826,10 +8951,15 @@ function phaseWinter(state, record, plan) {
   // and tractor power did not — but a farm kept the teams it had work for and
   // sold the rest. Every surplus team eats 55 bushels of oats a year, and an
   // uncapped herd was eating more than half the crop by the 1890s.
-  const draftNeeded = ['till', 'seed', 'harvest']
-    .map((op) => bestImplement(state, op))
-    .filter((i) => i && !i.byHand && !i.selfPowered)
-    .reduce((m, i) => Math.max(m, i.draftNeeded || 0), 0);
+  //
+  // desiredDraftPower(), not one implement's own draftNeeded: seasonCapacity
+  // can now run more than one crew off a shared pool of teams, so what is
+  // worth keeping is what the BUSIEST operation could put to work across
+  // every crew hands allow, not the figure for a single plow. Sized to one
+  // implement, this sold off every team bought for a second or third crew
+  // the same winter it arrived, at a distress price — the farm never got to
+  // use what it had just paid for.
+  const draftNeeded = desiredDraftPower(state);
 
   const horses = state.equipment.find((i) => i.type === 'horses');
   if (horses && rng.chance(0.25)) horses.count = (horses.count || 1) + 1;
@@ -9612,7 +9742,7 @@ __m["src/ui/panels.js"] = (function () {
 // panel can come up empty it says WHY it is empty and what would fill it — an
 // absent thing and a broken thing look identical otherwise.
 
-const { farmSummary, croppableAcres, yieldPerAcre, neutralConditions, totalDebt, debtService, creditLimit, borrowingRate, livingCost, feedRequired, grazingCapacity, netWorth, landValue, equipmentValue, livestockValue, granaryValue, labourForce, draftPower, equipmentPrice, currentVariety, bestImplement, breakableAcres, seasonCapacity, fieldLogistics, timelinessFactor, annualWage, implementsFor } = __m["src/engine/derive.js"];
+const { farmSummary, croppableAcres, yieldPerAcre, neutralConditions, totalDebt, debtService, creditLimit, borrowingRate, livingCost, feedRequired, grazingCapacity, netWorth, landValue, equipmentValue, livestockValue, granaryValue, labourForce, draftPower, equipmentPrice, currentVariety, bestImplement, breakableAcres, seasonCapacity, fieldLogistics, timelinessFactor, annualWage } = __m["src/engine/derive.js"];
 const { offeredPrograms, isEnrolled, taxReliefLabel, PROGRAM_LIST } = __m["src/engine/programs.js"];
 const { ROAD_WORKS } = __m["src/data/roads.data.js"];
 const { playerQuarters, legalDescription, ACRES_PER_QUARTER, quarterById, distanceFromYard, roadFor, forageAcres, maxBrokenAcres } = __m["src/engine/land.js"];
@@ -9840,27 +9970,15 @@ function renderPlan(state, draft) {
   const breakable = breakableAcres(state);
   out.push(row('Acres the outfit can crop', `${Math.round(cap.acres)} ac`));
   out.push(row('Limited by', cap.bottleneck));
-  // What actually sets the pace for the bottleneck operation: ONE implement
-  // — the single best one owned, never the sum of however many are in the
-  // yard — run by as many hands as there are machines to put them on. A
-  // second, third, or twentieth plow of a type already owned adds nothing;
-  // it is crews (hands, capped at one per distinct implement TYPE for the
-  // operation) and that one implement's own rated capacity that set the
-  // pace. Surfaced here because "I own two dozen plows and it isn't
-  // helping" is not a bug report, it is this arithmetic with no way to see
-  // it.
+  // What actually sets the pace for the bottleneck operation: every physical
+  // implement the farm owns for it is a candidate crew — one hand and, unless
+  // it is self-powered, a share of the farm's own draft power each — crewed
+  // best iron first until hands or the draft pool run out (seasonCapacity, in
+  // derive.js). A second seed drill genuinely adds a second crew now, so long
+  // as there is a spare hand and a spare team; it is hands or horsepower that
+  // caps it, never "you already own one of these."
   const bottleneckOp = cap.bottleneck === 'tillage' ? 'till' : cap.bottleneck === 'seeding' ? 'seed' : 'harvest';
   const bottleneckCap = seasonCapacity(state, bottleneckOp, 1);
-  const bottleneckTypes = implementsFor(state, bottleneckOp).length;
-  // The previous version of this hint told every player the same three
-  // levers regardless of which one actually applied — "hire a hand" was
-  // shown even to a farm that already had four times the hands it had
-  // implement types for the job, which does nothing (crews are capped at
-  // the SMALLER of the two). Work out which of hands or implement variety
-  // is actually binding, and for variety, whether there is anything left to
-  // buy at all — a farm that already owns every kind of drill invented so
-  // far cannot solve this by shopping.
-  const handsFloor = Math.floor(labourForce(state).units);
   let bottleneckNote;
   if (!bottleneckCap.implement || bottleneckCap.byHand) {
     bottleneckNote = cap.bottleneck === 'tillage' ? 'A faster plow or a team that can pull a bigger one raises this.'
@@ -9868,31 +9986,24 @@ function renderPlan(state, draft) {
       : 'A faster binder or combine raises this.';
   } else {
     const implName = esc(bottleneckCap.implement.name || bottleneckCap.implement.id);
-    const setBy = `Set by the ${implName}, run ${bottleneckCap.crews} up at once`;
-    if (handsFloor < bottleneckTypes) {
-      bottleneckNote = `${setBy}. You own ${bottleneckTypes} distinct kinds of ${esc(cap.bottleneck)} implement ` +
-        `but only ${handsFloor} hand${handsFloor === 1 ? '' : 's'} to run them — hiring another hand raises ` +
-        `this, up to ${bottleneckTypes} crews. Another implement will not: you already own more kinds than ` +
-        `you have people for.`;
+    const crewWord = bottleneckCap.crews === 1 ? 'crew' : 'crews';
+    const setBy = `Set by the ${implName} — ${bottleneckCap.crews} ${crewWord} of it running`;
+    // Read straight off what seasonCapacity() actually had left over once
+    // every crew was assigned, rather than probing with a hypothetical extra
+    // unit — croppableAcres(state, extra) adds that hypothetical at full
+    // condition, and comparing a fresh unit against a farm's own WORN fleet
+    // showed a "gain" from buying another of a type already owned well past
+    // what hands could crew, because the new one would simply replace a
+    // tired one in the top slots, not add a crew.
+    if (bottleneckCap.handsSpare <= 0) {
+      bottleneckNote = `${setBy} — that is every hand available. Hiring another raises this; another ` +
+        `implement will not, there would be nobody to run it.`;
+    } else if (bottleneckCap.draftSpare > 0) {
+      bottleneckNote = `${setBy}. Another ${implName} would raise this further — there is a hand and power ` +
+        `free to run it.`;
     } else {
-      const ownedTypeIds = new Set(implementsFor(state, bottleneckOp).map(({ item }) => item.type));
-      const notOwned = Object.values(EQUIPMENT).filter((e) => e.operation === bottleneckOp && !ownedTypeIds.has(e.id));
-      const buyableNow = notOwned.filter((e) => state.year >= e.from && state.year <= e.to);
-      const nextFuture = notOwned.filter((e) => state.year < e.from).sort((a, b) => a.from - b.from)[0];
-      const base = `${setBy} — one crew per hand, one per distinct kind of ${esc(cap.bottleneck)} implement ` +
-        `you own (you have ${bottleneckTypes}). Another of the SAME kind adds nothing.`;
-      if (buyableNow.length) {
-        bottleneckNote = `${base} A ${esc(buyableNow.map((e) => e.name).join(' or '))} would, since it's a ` +
-          `kind you don't own yet. Hiring more hands will not — you already have enough to crew everything ` +
-          `you own.`;
-      } else if (nextFuture) {
-        bottleneckNote = `${base} Every kind on the market today is already in your yard; the ` +
-          `${esc(nextFuture.name)} isn't built until ${nextFuture.from}. Until then only a faster single ` +
-          `implement raises this — hiring more hands will not.`;
-      } else {
-        bottleneckNote = `${base} Every kind of ${esc(cap.bottleneck)} implement there is is already in ` +
-          `your yard. Only a faster single implement raises this now.`;
-      }
+      bottleneckNote = `${setBy}. There are hands to spare, but not the draft power to put another machine ` +
+        `to work — more horses or a bigger engine raises this, another ${implName} will not.`;
     }
   }
   out.push(
