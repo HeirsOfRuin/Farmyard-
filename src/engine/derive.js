@@ -115,18 +115,34 @@ export function moistureFactor(moisture, c) {
  * summerfallow and herbicide are decoration, and the ablation said so: the
  * whole technology tree moved the survival rate by exactly zero.
  */
-export function weedControlLevel(state) {
+/**
+ * How well the farm's herbicide (or, for `c` omitted, its whole practice)
+ * holds weeds down, for crop `c`.
+ *
+ * Summerfallow's weed control is a genuine farm-wide practice — a year
+ * worked black starves the seed bank wherever the rotation puts it next —
+ * so it counts for every crop. A herbicide PROGRAM is billed per acre
+ * (costPerAcre) on exactly the crops phaseSpring's toSeed charges for it,
+ * so its control only counts on those same crops: hay, pasture, idle
+ * ground and bush never pay for a herbicide pass and were nonetheless
+ * getting its full weed suppression, on both the yield they made and how
+ * fast weed pressure built back up year over year.
+ */
+export function weedControlLevel(state, c) {
   let control = 0;
+  const paysInputs = !c || !NO_FIELD_INPUTS.has(c.id);
   for (const id of state.technologies || []) {
     const t = TECHNOLOGIES[id];
-    if (t?.effect?.weedControl) control = Math.max(control, t.effect.weedControl);
+    if (!t?.effect?.weedControl) continue;
+    if (t.costPerAcre != null && !paysInputs) continue;
+    control = Math.max(control, t.effect.weedControl);
   }
   return clamp(control, 0, 0.95);
 }
 
 export function weedFactor(state, q) {
   const pressure = clamp(q.weedPressure ?? 0.12, 0, 1);
-  const control = weedControlLevel(state);
+  const control = weedControlLevel(state, CROPS[q.use]);
   // Uncontrolled weeds on long-cropped ground take a serious share of a crop.
   return clamp(1 - pressure * (1 - control) * 0.5, 0.45, 1);
 }
@@ -169,12 +185,44 @@ export function currentVariety(state) {
   return WHEAT_VARIETIES.find((x) => x.id === state.wheatVariety) || WHEAT_VARIETIES[0];
 }
 
-/** Multiplier from adopted technologies that raise yield. */
-export function techYieldFactor(state) {
+// Crop ids that never draw on the per-acre input techs — no fertilizer or
+// herbicide bill (phaseSpring's toSeed filter, in turn.js, excludes exactly
+// these from the cost), and so no yield benefit from one either. One shared
+// list so the cost side and the yield side cannot drift apart the way they
+// just did: hay and pasture were carrying the full yield lift of commercial
+// fertilizer and the herbicide programs while never once appearing in the
+// loop that pays for either.
+export const NO_FIELD_INPUTS = new Set(['idle', 'pasture', 'bush', 'hay']);
+
+// Technologies priced and applied per acre of nitrogen actually put down.
+// Their cost and their yield benefit both scale by the crop's own
+// fertilityDraw (crops.data.js) against wheat's, the crop the flat
+// per-acre figures were originally priced against — a potato or sugar
+// beet crop draws half again as hard on the soil and answers more to
+// being fed; oats and rye draw lighter and need less.
+export const FERTILIZER_TECH_IDS = new Set(['commercialFertilizer', 'anhydrousAmmonia']);
+
+/** How much more (or less) than wheat this crop draws on soil fertility. */
+export function fertilizerScale(c) {
+  const wheatDraw = CROPS.wheat.fertilityDraw || 1;
+  return clamp((c?.fertilityDraw ?? wheatDraw) / wheatDraw, 0.3, 3);
+}
+
+/** Multiplier from adopted technologies that raise yield, for crop `c`. */
+export function techYieldFactor(state, c) {
   let f = 1;
+  const paysInputs = !!c && !NO_FIELD_INPUTS.has(c.id);
   for (const id of state.technologies || []) {
     const t = TECHNOLOGIES[id];
-    if (t?.effect?.yieldFactor) f *= t.effect.yieldFactor;
+    if (!t?.effect?.yieldFactor) continue;
+    // A technology billed per acre only lifts the yield of the acres that
+    // are actually billed for it.
+    if (t.costPerAcre != null && !paysInputs) continue;
+    let mult = t.effect.yieldFactor;
+    if (FERTILIZER_TECH_IDS.has(id) && c) {
+      mult = 1 + (mult - 1) * fertilizerScale(c);
+    }
+    f *= mult;
   }
   // The seeding implement's own quality: broadcast wastes seed and yields less
   // than a drill, and an air drill places it better than either.
@@ -207,7 +255,7 @@ export function yieldPerAcre(state, q, cropId, conditions = neutralConditions())
   y *= weedFactor(state, c.category === 'forage' ? { ...q, weedPressure: (q.weedPressure ?? 0) * 0.4 } : q);
   // Pasture does not care how far away it is; a crop very much does.
   if (!c.grazed) y *= timelinessFactor(state, q);
-  y *= techYieldFactor(state);
+  y *= techYieldFactor(state, c);
   y *= diff.yieldMult;
   y *= conditions.weatherYield ?? 1;
 

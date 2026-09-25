@@ -20,6 +20,7 @@ import {
   propertyTax, conditionFactor,
   creditLimit, croppableAcres, breakableAcres, weedControlLevel,
   carryingCapacity, livestockUnits, speciesCap, draftPower, desiredDraftPower, techEffect,
+  NO_FIELD_INPUTS, FERTILIZER_TECH_IDS, fertilizerScale,
   BASE_THRESHING_DAYS, BASE_BREAKING_DAYS,
 } from './derive.js';
 import {
@@ -667,7 +668,7 @@ function phaseSpring(state, record, plan) {
   const toSeed = playerQuarters(state.quarters)
     .filter((q) => {
       const c = CROPS[q.use];
-      return c && c.seedRate >= 0 && !['idle', 'pasture', 'bush', 'hay'].includes(q.use);
+      return c && c.seedRate >= 0 && !NO_FIELD_INPUTS.has(q.use);
     })
     .map((q) => ({ q, acres: workableAcres(q) }));
 
@@ -741,10 +742,13 @@ function phaseSpring(state, record, plan) {
   for (const { q } of toSeed) {
     if (!q.seededAcres) continue;
     for (const techId of state.technologies) {
-      const t = TECHNOLOGIES[techId];
-      if (t?.costPerAcre) {
-        inputCost += inflate(t.costPerAcre / (priceIndex(t.costYear || 1950) / 100), state.year) * q.seededAcres;
-      }
+      // Fertilizer is bought by the crop's own appetite: a potato or sugar
+      // beet crop draws half again as hard on the soil as wheat and costs
+      // proportionally more to feed; oats and rye draw lighter and cost
+      // less. See technologyCostPerAcre() below and techYieldFactor() in
+      // derive.js — the yield benefit answers to the same ratio, on the
+      // same acres.
+      inputCost += technologyCostPerAcre(state, techId, q.use) * q.seededAcres;
     }
   }
 
@@ -1597,8 +1601,9 @@ function phaseWinter(state, record, plan) {
     q.fertility = clamp(q.fertility - erosionLoss, 0.12, 1.05);
 
     // Weeds build on ground that is cropped and are knocked back by a year of
-    // summerfallow worked black all summer — and, from 1947, by chemistry.
-    const control = weedControlLevel(state);
+    // summerfallow worked black all summer — and, from 1947, by chemistry
+    // billed on the acres that pay for it (see weedControlLevel, derive.js).
+    const control = weedControlLevel(state, CROPS[q.use]);
     let weeds = q.weedPressure ?? 0.12;
     if (q.use === 'fallow') weeds -= 0.4;
     else if (q.use === 'pasture' || q.use === 'hay') weeds -= 0.05;
@@ -1917,10 +1922,26 @@ function technologyCost(state, techId) {
   return baseCost / techAdoptionMult;
 }
 
+/**
+ * What a per-acre input technology costs THIS state, this year, for a given
+ * crop — the same figure phaseSpring's inputCost loop settles with (see
+ * `toSeed`, above), pulled out so the market panel can preview it rather
+ * than recomputing the inflation and the fertility scaling separately.
+ * `cropId` defaults to wheat, the crop the flat costPerAcre figures were
+ * priced against.
+ */
+function technologyCostPerAcre(state, techId, cropId) {
+  const t = TECHNOLOGIES[techId];
+  if (!t?.costPerAcre) return 0;
+  let perAcre = inflate(t.costPerAcre / (priceIndex(t.costYear || 1950) / 100), state.year);
+  if (FERTILIZER_TECH_IDS.has(techId)) perAcre *= fertilizerScale(CROPS[cropId || 'wheat']);
+  return perAcre;
+}
+
 function sumValues(obj) {
   let s = 0;
   for (const [k, v] of Object.entries(obj)) if (k !== 'total' && typeof v === 'number') s += v;
   return s;
 }
 
-export { quarterPurchasePrice, technologyCost };
+export { quarterPurchasePrice, technologyCost, technologyCostPerAcre };

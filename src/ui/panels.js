@@ -12,7 +12,7 @@ import {
   grazingCapacity, netWorth, landValue, equipmentValue, livestockValue,
   granaryValue, labourForce, draftPower, equipmentPrice, currentVariety,
   bestImplement, breakableAcres, seasonCapacity, fieldLogistics, timelinessFactor,
-  annualWage,
+  annualWage, FERTILIZER_TECH_IDS,
 } from '../engine/derive.js';
 import { offeredPrograms, isEnrolled, taxReliefLabel, PROGRAM_LIST } from '../engine/programs.js';
 import { ROAD_WORKS } from '../data/roads.data.js';
@@ -27,7 +27,7 @@ import { LIVESTOCK, LIVESTOCK_PRICING } from '../data/livestock.data.js';
 import { FIRST_YEAR, inflate } from '../data/prices.data.js';
 import { operator, age, fullName, heirCandidates, TRAITS, isAlive, birthChance } from '../engine/family.js';
 import { storageCapacity, interpAnchors, realisedPrice } from '../engine/market.js';
-import { quarterPurchasePrice, technologyCost } from '../engine/turn.js';
+import { quarterPurchasePrice, technologyCost, technologyCostPerAcre } from '../engine/turn.js';
 import { esc, USE_COLOURS } from './map.js';
 import { money, qty, pct, unitPrice } from './format.js';
 
@@ -838,7 +838,11 @@ export function renderMarket(state, draft) {
       out.push(
         `<div class="field${queued ? ' sel' : ''}">
            <div><div class="nm">${esc(t.name)}${queued ? ' <span class="pill good">queued</span>' : ''}</div>
-             <div class="meta">${t.costPerAcre ? `${money(t.costPerAcre)}/ac` : cost ? money(cost) : 'no cost'}
+             <div class="meta">${t.costPerAcre
+               ? FERTILIZER_TECH_IDS.has(t.id)
+                 ? `${unitPrice(technologyCostPerAcre(state, t.id))}/ac on wheat — more on a hungrier crop, less on a lighter one`
+                 : `${unitPrice(technologyCostPerAcre(state, t.id))}/ac`
+               : cost ? money(cost) : 'no cost'}
                ${blocked ? ` &middot; <span style="color:var(--alarm)">${esc(blocked)}</span>` : ''}
                <br>${esc(t.note)}</div></div>
            <button class="btn sm" data-tech="${t.id}" ${blocked || (!queued && cost > cash) ? 'disabled' : ''}>

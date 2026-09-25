@@ -3788,18 +3788,34 @@ function moistureFactor(moisture, c) {
  * summerfallow and herbicide are decoration, and the ablation said so: the
  * whole technology tree moved the survival rate by exactly zero.
  */
-function weedControlLevel(state) {
+/**
+ * How well the farm's herbicide (or, for `c` omitted, its whole practice)
+ * holds weeds down, for crop `c`.
+ *
+ * Summerfallow's weed control is a genuine farm-wide practice — a year
+ * worked black starves the seed bank wherever the rotation puts it next —
+ * so it counts for every crop. A herbicide PROGRAM is billed per acre
+ * (costPerAcre) on exactly the crops phaseSpring's toSeed charges for it,
+ * so its control only counts on those same crops: hay, pasture, idle
+ * ground and bush never pay for a herbicide pass and were nonetheless
+ * getting its full weed suppression, on both the yield they made and how
+ * fast weed pressure built back up year over year.
+ */
+function weedControlLevel(state, c) {
   let control = 0;
+  const paysInputs = !c || !NO_FIELD_INPUTS.has(c.id);
   for (const id of state.technologies || []) {
     const t = TECHNOLOGIES[id];
-    if (t?.effect?.weedControl) control = Math.max(control, t.effect.weedControl);
+    if (!t?.effect?.weedControl) continue;
+    if (t.costPerAcre != null && !paysInputs) continue;
+    control = Math.max(control, t.effect.weedControl);
   }
   return clamp(control, 0, 0.95);
 }
 
 function weedFactor(state, q) {
   const pressure = clamp(q.weedPressure ?? 0.12, 0, 1);
-  const control = weedControlLevel(state);
+  const control = weedControlLevel(state, CROPS[q.use]);
   // Uncontrolled weeds on long-cropped ground take a serious share of a crop.
   return clamp(1 - pressure * (1 - control) * 0.5, 0.45, 1);
 }
@@ -3842,12 +3858,44 @@ function currentVariety(state) {
   return WHEAT_VARIETIES.find((x) => x.id === state.wheatVariety) || WHEAT_VARIETIES[0];
 }
 
-/** Multiplier from adopted technologies that raise yield. */
-function techYieldFactor(state) {
+// Crop ids that never draw on the per-acre input techs — no fertilizer or
+// herbicide bill (phaseSpring's toSeed filter, in turn.js, excludes exactly
+// these from the cost), and so no yield benefit from one either. One shared
+// list so the cost side and the yield side cannot drift apart the way they
+// just did: hay and pasture were carrying the full yield lift of commercial
+// fertilizer and the herbicide programs while never once appearing in the
+// loop that pays for either.
+const NO_FIELD_INPUTS = new Set(['idle', 'pasture', 'bush', 'hay']);
+
+// Technologies priced and applied per acre of nitrogen actually put down.
+// Their cost and their yield benefit both scale by the crop's own
+// fertilityDraw (crops.data.js) against wheat's, the crop the flat
+// per-acre figures were originally priced against — a potato or sugar
+// beet crop draws half again as hard on the soil and answers more to
+// being fed; oats and rye draw lighter and need less.
+const FERTILIZER_TECH_IDS = new Set(['commercialFertilizer', 'anhydrousAmmonia']);
+
+/** How much more (or less) than wheat this crop draws on soil fertility. */
+function fertilizerScale(c) {
+  const wheatDraw = CROPS.wheat.fertilityDraw || 1;
+  return clamp((c?.fertilityDraw ?? wheatDraw) / wheatDraw, 0.3, 3);
+}
+
+/** Multiplier from adopted technologies that raise yield, for crop `c`. */
+function techYieldFactor(state, c) {
   let f = 1;
+  const paysInputs = !!c && !NO_FIELD_INPUTS.has(c.id);
   for (const id of state.technologies || []) {
     const t = TECHNOLOGIES[id];
-    if (t?.effect?.yieldFactor) f *= t.effect.yieldFactor;
+    if (!t?.effect?.yieldFactor) continue;
+    // A technology billed per acre only lifts the yield of the acres that
+    // are actually billed for it.
+    if (t.costPerAcre != null && !paysInputs) continue;
+    let mult = t.effect.yieldFactor;
+    if (FERTILIZER_TECH_IDS.has(id) && c) {
+      mult = 1 + (mult - 1) * fertilizerScale(c);
+    }
+    f *= mult;
   }
   // The seeding implement's own quality: broadcast wastes seed and yields less
   // than a drill, and an air drill places it better than either.
@@ -3880,7 +3928,7 @@ function yieldPerAcre(state, q, cropId, conditions = neutralConditions()) {
   y *= weedFactor(state, c.category === 'forage' ? { ...q, weedPressure: (q.weedPressure ?? 0) * 0.4 } : q);
   // Pasture does not care how far away it is; a crop very much does.
   if (!c.grazed) y *= timelinessFactor(state, q);
-  y *= techYieldFactor(state);
+  y *= techYieldFactor(state, c);
   y *= diff.yieldMult;
   y *= conditions.weatherYield ?? 1;
 
@@ -4852,7 +4900,7 @@ const LIVESTOCK_PRICE_CACHE = LIVESTOCK_PRICING;
 
 
 
-return { neutralConditions, fertilityFactor, newBreakingFactor, moistureFactor, weedControlLevel, weedFactor, techEffect, rotationFactor, varietyFactor, currentVariety, techYieldFactor, yieldPerAcre, draftPower, conditionFactor, implementsFor, bestImplement, bestBreaker, effectiveCapacity, labourForce, workingAge, workerUnits, seasonCapacity, desiredDraftPower, travelSpeed, haulCapacity, transportPenalty, timelinessFactor, fieldLogistics, croppableAcres, breakableAcres, springDays, harvestDays, feedRequired, projectedFeedRequired, carryingCapacity, speciesCap, livestockUnits, grazingCapacity, landValue, equipmentPrice, equipmentValue, livestockValue, headPrice, granaryValue, totalDebt, debtService, propertyTax, netWorth, creditLimit, borrowingRate, livingCost, subsistenceOffset, annualWage, haulMiles, marketingCostPerBushel, farmSummary, BASE_SPRING_DAYS, BASE_HARVEST_DAYS, BASE_THRESHING_DAYS, HAND_METHODS, BASE_BREAKING_DAYS, clamp };
+return { neutralConditions, fertilityFactor, newBreakingFactor, moistureFactor, weedControlLevel, weedFactor, techEffect, rotationFactor, varietyFactor, currentVariety, fertilizerScale, techYieldFactor, yieldPerAcre, draftPower, conditionFactor, implementsFor, bestImplement, bestBreaker, effectiveCapacity, labourForce, workingAge, workerUnits, seasonCapacity, desiredDraftPower, travelSpeed, haulCapacity, transportPenalty, timelinessFactor, fieldLogistics, croppableAcres, breakableAcres, springDays, harvestDays, feedRequired, projectedFeedRequired, carryingCapacity, speciesCap, livestockUnits, grazingCapacity, landValue, equipmentPrice, equipmentValue, livestockValue, headPrice, granaryValue, totalDebt, debtService, propertyTax, netWorth, creditLimit, borrowingRate, livingCost, subsistenceOffset, annualWage, haulMiles, marketingCostPerBushel, farmSummary, BASE_SPRING_DAYS, BASE_HARVEST_DAYS, BASE_THRESHING_DAYS, NO_FIELD_INPUTS, FERTILIZER_TECH_IDS, HAND_METHODS, BASE_BREAKING_DAYS, clamp };
 })();
 
 __m["src/engine/state.js"] = (function () {
@@ -7332,7 +7380,7 @@ __m["src/engine/turn.js"] = (function () {
 
 const { streamFor } = __m["src/engine/rng.js"];
 const { STATUS, ownedQuarters } = __m["src/engine/state.js"];
-const { yieldPerAcre, neutralConditions, seasonCapacity, springDays, harvestDays, feedRequired, projectedFeedRequired, grazingCapacity, livingCost, annualWage, labourForce, netWorth, totalDebt, farmSummary, bestImplement, bestBreaker, clamp, currentVariety, equipmentPrice, propertyTax, conditionFactor, creditLimit, croppableAcres, breakableAcres, weedControlLevel, carryingCapacity, livestockUnits, speciesCap, draftPower, desiredDraftPower, techEffect, BASE_THRESHING_DAYS, BASE_BREAKING_DAYS } = __m["src/engine/derive.js"];
+const { yieldPerAcre, neutralConditions, seasonCapacity, springDays, harvestDays, feedRequired, projectedFeedRequired, grazingCapacity, livingCost, annualWage, labourForce, netWorth, totalDebt, farmSummary, bestImplement, bestBreaker, clamp, currentVariety, equipmentPrice, propertyTax, conditionFactor, creditLimit, croppableAcres, breakableAcres, weedControlLevel, carryingCapacity, livestockUnits, speciesCap, draftPower, desiredDraftPower, techEffect, NO_FIELD_INPUTS, FERTILIZER_TECH_IDS, fertilizerScale, BASE_THRESHING_DAYS, BASE_BREAKING_DAYS } = __m["src/engine/derive.js"];
 const { ACRES_PER_QUARTER, playerQuarters, quarterById, workableAcres, breakingCostPerAcre, quarterValueFactor, roadFor, distanceFromYard, settledBrokenAcres, maxBrokenAcres, forageAcres } = __m["src/engine/land.js"];
 const { crop: cropDef, CROPS, cropsAvailable, WHEAT_VARIETIES } = __m["src/data/crops.data.js"];
 const { equipment: equipDef, EQUIPMENT } = __m["src/data/equipment.data.js"];
@@ -7971,7 +8019,7 @@ function phaseSpring(state, record, plan) {
   const toSeed = playerQuarters(state.quarters)
     .filter((q) => {
       const c = CROPS[q.use];
-      return c && c.seedRate >= 0 && !['idle', 'pasture', 'bush', 'hay'].includes(q.use);
+      return c && c.seedRate >= 0 && !NO_FIELD_INPUTS.has(q.use);
     })
     .map((q) => ({ q, acres: workableAcres(q) }));
 
@@ -8045,10 +8093,13 @@ function phaseSpring(state, record, plan) {
   for (const { q } of toSeed) {
     if (!q.seededAcres) continue;
     for (const techId of state.technologies) {
-      const t = TECHNOLOGIES[techId];
-      if (t?.costPerAcre) {
-        inputCost += inflate(t.costPerAcre / (priceIndex(t.costYear || 1950) / 100), state.year) * q.seededAcres;
-      }
+      // Fertilizer is bought by the crop's own appetite: a potato or sugar
+      // beet crop draws half again as hard on the soil as wheat and costs
+      // proportionally more to feed; oats and rye draw lighter and cost
+      // less. See technologyCostPerAcre() below and techYieldFactor() in
+      // derive.js — the yield benefit answers to the same ratio, on the
+      // same acres.
+      inputCost += technologyCostPerAcre(state, techId, q.use) * q.seededAcres;
     }
   }
 
@@ -8901,8 +8952,9 @@ function phaseWinter(state, record, plan) {
     q.fertility = clamp(q.fertility - erosionLoss, 0.12, 1.05);
 
     // Weeds build on ground that is cropped and are knocked back by a year of
-    // summerfallow worked black all summer — and, from 1947, by chemistry.
-    const control = weedControlLevel(state);
+    // summerfallow worked black all summer — and, from 1947, by chemistry
+    // billed on the acres that pay for it (see weedControlLevel, derive.js).
+    const control = weedControlLevel(state, CROPS[q.use]);
     let weeds = q.weedPressure ?? 0.12;
     if (q.use === 'fallow') weeds -= 0.4;
     else if (q.use === 'pasture' || q.use === 'hay') weeds -= 0.05;
@@ -9221,6 +9273,22 @@ function technologyCost(state, techId) {
   return baseCost / techAdoptionMult;
 }
 
+/**
+ * What a per-acre input technology costs THIS state, this year, for a given
+ * crop — the same figure phaseSpring's inputCost loop settles with (see
+ * `toSeed`, above), pulled out so the market panel can preview it rather
+ * than recomputing the inflation and the fertility scaling separately.
+ * `cropId` defaults to wheat, the crop the flat costPerAcre figures were
+ * priced against.
+ */
+function technologyCostPerAcre(state, techId, cropId) {
+  const t = TECHNOLOGIES[techId];
+  if (!t?.costPerAcre) return 0;
+  let perAcre = inflate(t.costPerAcre / (priceIndex(t.costYear || 1950) / 100), state.year);
+  if (FERTILIZER_TECH_IDS.has(techId)) perAcre *= fertilizerScale(CROPS[cropId || 'wheat']);
+  return perAcre;
+}
+
 function sumValues(obj) {
   let s = 0;
   for (const [k, v] of Object.entries(obj)) if (k !== 'total' && typeof v === 'number') s += v;
@@ -9229,7 +9297,7 @@ function sumValues(obj) {
 
 
 
-return { runYear, HOMESTEAD_FEE, PROVE_UP_YEARS, PROVE_UP_ACRES, quarterPurchasePrice, technologyCost };
+return { runYear, HOMESTEAD_FEE, PROVE_UP_YEARS, PROVE_UP_ACRES, quarterPurchasePrice, technologyCost, technologyCostPerAcre };
 })();
 
 __m["src/ui/map.js"] = (function () {
@@ -9742,7 +9810,7 @@ __m["src/ui/panels.js"] = (function () {
 // panel can come up empty it says WHY it is empty and what would fill it — an
 // absent thing and a broken thing look identical otherwise.
 
-const { farmSummary, croppableAcres, yieldPerAcre, neutralConditions, totalDebt, debtService, creditLimit, borrowingRate, livingCost, feedRequired, grazingCapacity, netWorth, landValue, equipmentValue, livestockValue, granaryValue, labourForce, draftPower, equipmentPrice, currentVariety, bestImplement, breakableAcres, seasonCapacity, fieldLogistics, timelinessFactor, annualWage } = __m["src/engine/derive.js"];
+const { farmSummary, croppableAcres, yieldPerAcre, neutralConditions, totalDebt, debtService, creditLimit, borrowingRate, livingCost, feedRequired, grazingCapacity, netWorth, landValue, equipmentValue, livestockValue, granaryValue, labourForce, draftPower, equipmentPrice, currentVariety, bestImplement, breakableAcres, seasonCapacity, fieldLogistics, timelinessFactor, annualWage, FERTILIZER_TECH_IDS } = __m["src/engine/derive.js"];
 const { offeredPrograms, isEnrolled, taxReliefLabel, PROGRAM_LIST } = __m["src/engine/programs.js"];
 const { ROAD_WORKS } = __m["src/data/roads.data.js"];
 const { playerQuarters, legalDescription, ACRES_PER_QUARTER, quarterById, distanceFromYard, roadFor, forageAcres, maxBrokenAcres } = __m["src/engine/land.js"];
@@ -9753,7 +9821,7 @@ const { LIVESTOCK, LIVESTOCK_PRICING } = __m["src/data/livestock.data.js"];
 const { FIRST_YEAR, inflate } = __m["src/data/prices.data.js"];
 const { operator, age, fullName, heirCandidates, TRAITS, isAlive, birthChance } = __m["src/engine/family.js"];
 const { storageCapacity, interpAnchors, realisedPrice } = __m["src/engine/market.js"];
-const { quarterPurchasePrice, technologyCost } = __m["src/engine/turn.js"];
+const { quarterPurchasePrice, technologyCost, technologyCostPerAcre } = __m["src/engine/turn.js"];
 const { esc, USE_COLOURS } = __m["src/ui/map.js"];
 const { money, qty, pct, unitPrice } = __m["src/ui/format.js"];
 
@@ -10564,7 +10632,11 @@ function renderMarket(state, draft) {
       out.push(
         `<div class="field${queued ? ' sel' : ''}">
            <div><div class="nm">${esc(t.name)}${queued ? ' <span class="pill good">queued</span>' : ''}</div>
-             <div class="meta">${t.costPerAcre ? `${money(t.costPerAcre)}/ac` : cost ? money(cost) : 'no cost'}
+             <div class="meta">${t.costPerAcre
+               ? FERTILIZER_TECH_IDS.has(t.id)
+                 ? `${unitPrice(technologyCostPerAcre(state, t.id))}/ac on wheat — more on a hungrier crop, less on a lighter one`
+                 : `${unitPrice(technologyCostPerAcre(state, t.id))}/ac`
+               : cost ? money(cost) : 'no cost'}
                ${blocked ? ` &middot; <span style="color:var(--alarm)">${esc(blocked)}</span>` : ''}
                <br>${esc(t.note)}</div></div>
            <button class="btn sm" data-tech="${t.id}" ${blocked || (!queued && cost > cash) ? 'disabled' : ''}>
