@@ -3989,6 +3989,15 @@ function labourForce(state) {
   // filling lamps, pumping by hand or shovelling grain up a ladder.
   const saved = 1 + techEffect(state, 'labourSaved', { mode: 'sum' });
   units *= saved;
+  // Enlistment took working-age hands off the farm during both wars and the
+  // 1885 Resistance — history.data.js's own text for each ("young men are
+  // going from every district"). The flag was carried by state.modifiers
+  // since the game shipped but nothing ever read it, so a world war changed
+  // nothing about what the farm could actually do. Family labour only: hired
+  // hands are a wage the player already chose to pay for, not a pool that
+  // thins out on its own.
+  const shortage = clamp(state.modifiers?.labourShortage || 0, 0, 0.85);
+  units *= 1 - shortage;
   return {
     people: workers.length,
     units: units + (state.hiredHands || 0),
@@ -9843,16 +9852,51 @@ function renderPlan(state, draft) {
   const bottleneckOp = cap.bottleneck === 'tillage' ? 'till' : cap.bottleneck === 'seeding' ? 'seed' : 'harvest';
   const bottleneckCap = seasonCapacity(state, bottleneckOp, 1);
   const bottleneckTypes = implementsFor(state, bottleneckOp).length;
+  // The previous version of this hint told every player the same three
+  // levers regardless of which one actually applied — "hire a hand" was
+  // shown even to a farm that already had four times the hands it had
+  // implement types for the job, which does nothing (crews are capped at
+  // the SMALLER of the two). Work out which of hands or implement variety
+  // is actually binding, and for variety, whether there is anything left to
+  // buy at all — a farm that already owns every kind of drill invented so
+  // far cannot solve this by shopping.
+  const handsFloor = Math.floor(labourForce(state).units);
+  let bottleneckNote;
+  if (!bottleneckCap.implement || bottleneckCap.byHand) {
+    bottleneckNote = cap.bottleneck === 'tillage' ? 'A faster plow or a team that can pull a bigger one raises this.'
+      : cap.bottleneck === 'seeding' ? 'A drill, or a better one, raises this.'
+      : 'A faster binder or combine raises this.';
+  } else {
+    const implName = esc(bottleneckCap.implement.name || bottleneckCap.implement.id);
+    const setBy = `Set by the ${implName}, run ${bottleneckCap.crews} up at once`;
+    if (handsFloor < bottleneckTypes) {
+      bottleneckNote = `${setBy}. You own ${bottleneckTypes} distinct kinds of ${esc(cap.bottleneck)} implement ` +
+        `but only ${handsFloor} hand${handsFloor === 1 ? '' : 's'} to run them — hiring another hand raises ` +
+        `this, up to ${bottleneckTypes} crews. Another implement will not: you already own more kinds than ` +
+        `you have people for.`;
+    } else {
+      const ownedTypeIds = new Set(implementsFor(state, bottleneckOp).map(({ item }) => item.type));
+      const notOwned = Object.values(EQUIPMENT).filter((e) => e.operation === bottleneckOp && !ownedTypeIds.has(e.id));
+      const buyableNow = notOwned.filter((e) => state.year >= e.from && state.year <= e.to);
+      const nextFuture = notOwned.filter((e) => state.year < e.from).sort((a, b) => a.from - b.from)[0];
+      const base = `${setBy} — one crew per hand, one per distinct kind of ${esc(cap.bottleneck)} implement ` +
+        `you own (you have ${bottleneckTypes}). Another of the SAME kind adds nothing.`;
+      if (buyableNow.length) {
+        bottleneckNote = `${base} A ${esc(buyableNow.map((e) => e.name).join(' or '))} would, since it's a ` +
+          `kind you don't own yet. Hiring more hands will not — you already have enough to crew everything ` +
+          `you own.`;
+      } else if (nextFuture) {
+        bottleneckNote = `${base} Every kind on the market today is already in your yard; the ` +
+          `${esc(nextFuture.name)} isn't built until ${nextFuture.from}. Until then only a faster single ` +
+          `implement raises this — hiring more hands will not.`;
+      } else {
+        bottleneckNote = `${base} Every kind of ${esc(cap.bottleneck)} implement there is is already in ` +
+          `your yard. Only a faster single implement raises this now.`;
+      }
+    }
+  }
   out.push(
-    `<div style="font-size:.76rem;color:var(--ink-3);margin:-2px 0 6px">` +
-      `${bottleneckCap.implement ? `Set by the ${esc(bottleneckCap.implement.name || bottleneckCap.implement.id)}, ` +
-        `run ${bottleneckCap.crews} up at once — one crew per hand, up to one per distinct kind of ` +
-        `${esc(cap.bottleneck)} implement you own (you have ${bottleneckTypes}). Owning more of the ` +
-        `SAME implement does not add another crew; a faster single implement, another distinct kind ` +
-        `to run alongside it, or another hand to run one all raise this.`
-        : cap.bottleneck === 'tillage' ? 'A faster plow or a team that can pull a bigger one raises this.'
-        : cap.bottleneck === 'seeding' ? 'A drill, or a better one, raises this.'
-        : 'A faster binder or combine raises this.'} ` +
+    `<div style="font-size:.76rem;color:var(--ink-3);margin:-2px 0 6px">${bottleneckNote} ` +
       `Hay and pasture do not draw on it at all — only grain competes for these days.</div>`
   );
   out.push(row('Sod it can break', `${Math.round(breakable.acres)} ac`));
@@ -9884,6 +9928,20 @@ function renderPlan(state, draft) {
   out.push(row('Draft power', `${draftPower(state).toFixed(1)} horse`));
   const labour = labourForce(state);
   out.push(row('Hands available', `${labour.units.toFixed(1)}${labour.hired ? ` (${labour.family.toFixed(1)} family + ${labour.hired} hired)` : ''}`));
+  // labourShortage was declared on every war-era history event since the game
+  // shipped and read by nothing — a world war changed the story text and
+  // nothing else. It now actually thins the family workforce (see
+  // labourForce() in derive.js); this is the only place that says why, so a
+  // sudden drop in "Hands available" is not mistaken for a bug.
+  const atWar = (state.activeEffects || []).some((e) => e.effects?.warYears && e.expiresAfter >= state.year);
+  if (state.modifiers?.labourShortage > 0) {
+    const shortagePct = Math.round(Math.min(state.modifiers.labourShortage, 0.85) * 100);
+    out.push(
+      `<div style="font-size:.78rem;color:var(--alarm);margin:-2px 0 6px">` +
+        `${atWar ? 'The war' : 'Trouble in the district'} is costing the farm's own family labour about ` +
+        `${shortagePct}% this year — hired hands are not affected and can make up the gap.</div>`
+    );
+  }
   // The one player-facing lever for more crews when the family itself is
   // the cap — engine/turn.js has read plan.hiredHands into a persisted
   // state.hiredHands since before this session (the bot hires against

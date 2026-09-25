@@ -316,6 +316,15 @@ export function labourForce(state) {
   // filling lamps, pumping by hand or shovelling grain up a ladder.
   const saved = 1 + techEffect(state, 'labourSaved', { mode: 'sum' });
   units *= saved;
+  // Enlistment took working-age hands off the farm during both wars and the
+  // 1885 Resistance — history.data.js's own text for each ("young men are
+  // going from every district"). The flag was carried by state.modifiers
+  // since the game shipped but nothing ever read it, so a world war changed
+  // nothing about what the farm could actually do. Family labour only: hired
+  // hands are a wage the player already chose to pay for, not a pool that
+  // thins out on its own.
+  const shortage = clamp(state.modifiers?.labourShortage || 0, 0, 0.85);
+  units *= 1 - shortage;
   return {
     people: workers.length,
     units: units + (state.hiredHands || 0),
