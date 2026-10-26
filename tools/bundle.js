@@ -35,7 +35,7 @@ function serviceWorker(stamp) {
 // is picked up the next time there is a signal, and fall back to the cache so
 // the farm still opens on a combine with no bars. Everything else is served
 // from the cache when it is there.
-const CACHE = 'centennial-farm-\${stamp}';
+const CACHE = 'centennial-farm-${stamp}';
 const ASSETS = ['./', './index.html', './manifest.webmanifest', './icon-180.png', './icon-512.png'];
 
 self.addEventListener('install', (e) => {
@@ -277,7 +277,14 @@ for (const n of ['icon-180.png', 'icon-512.png']) {
 // The cache name carries the build's own fingerprint, so a deploy retires the
 // last one instead of serving a stale page forever.
 const stamp = createHash('sha256').update(pagesHtml).digest('hex').slice(0, 12);
-await writeFile(join(docs, 'sw.js'), serviceWorker(stamp), 'utf8');
+const sw = serviceWorker(stamp);
+// Until 2026-10 this line shipped the literal text "\${stamp}" in every build
+// (an escaped placeholder inside the template), so the cache name never changed
+// and returning players never saw an update. Assert the stamp really landed.
+if (!sw.includes(`'centennial-farm-${stamp}'`) || sw.includes('${')) {
+  throw new Error('docs build: the service worker cache name was not stamped');
+}
+await writeFile(join(docs, 'sw.js'), sw, 'utf8');
 // Pages runs Jekyll otherwise, which ignores files and folders starting with
 // an underscore and can silently drop things.
 await writeFile(join(docs, '.nojekyll'), '', 'utf8');

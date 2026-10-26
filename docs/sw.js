@@ -5,7 +5,7 @@
 // is picked up the next time there is a signal, and fall back to the cache so
 // the farm still opens on a combine with no bars. Everything else is served
 // from the cache when it is there.
-const CACHE = 'centennial-farm-${stamp}';
+const CACHE = 'centennial-farm-fa92e63808f5';
 const ASSETS = ['./', './index.html', './manifest.webmanifest', './icon-180.png', './icon-512.png'];
 
 self.addEventListener('install', (e) => {

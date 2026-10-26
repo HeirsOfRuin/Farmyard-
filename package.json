@@ -5,12 +5,15 @@
   "type": "module",
   "private": true,
   "scripts": {
-    "test": "node --test test/",
+    "test": "node --test \"test/*.test.js\"",
     "sim": "node sim/run.js",
     "trace": "node sim/run.js --trace=2",
     "tiers": "node sim/verify-tiers.js",
     "build": "node tools/bundle.js",
-    "serve": "python3 -m http.server 8000"
+    "serve": "python3 -m http.server 8000",
+    "check": "node --test \"test/*.test.js\" && node tools/bundle.js && node tools/check-bundle.mjs && node tools/smoke.mjs"
   },
-  "engines": { "node": ">=20" }
+  "engines": {
+    "node": ">=20"
+  }
 }

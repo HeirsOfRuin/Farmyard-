@@ -225,7 +225,15 @@ export function migrate(s) {
 // that assumes it works will lose somebody's century.
 // ---------------------------------------------------------------------------
 
-export function saveToStorage(state, storage = globalThis.localStorage) {
+// The lookup itself can throw: in a sandboxed frame without allow-same-origin
+// (an itch.io-style embed) reading globalThis.localStorage raises before any
+// try block inside the function runs, because default parameters are
+// evaluated at the call. Guard the lookup, not only the reads and writes.
+function defaultStorage() {
+  try { return globalThis.localStorage ?? null; } catch { return null; }
+}
+
+export function saveToStorage(state, storage = defaultStorage()) {
   if (!storage) return { ok: false, reason: 'no storage available' };
   try {
     storage.setItem(SAVE_KEY, serialize(state));
@@ -235,7 +243,7 @@ export function saveToStorage(state, storage = globalThis.localStorage) {
   }
 }
 
-export function loadFromStorage(storage = globalThis.localStorage) {
+export function loadFromStorage(storage = defaultStorage()) {
   if (!storage) return { ok: false, reason: 'no storage available' };
   let raw;
   try {
@@ -251,7 +259,7 @@ export function loadFromStorage(storage = globalThis.localStorage) {
   }
 }
 
-export function clearStorage(storage = globalThis.localStorage) {
+export function clearStorage(storage = defaultStorage()) {
   try { storage?.removeItem(SAVE_KEY); return { ok: true }; }
   catch (err) { return { ok: false, reason: err?.message }; }
 }
